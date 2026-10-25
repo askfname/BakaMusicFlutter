@@ -1,0 +1,6 @@
+# Copy this file to key.properties and fill in the values for release signing.
+# Store the keystore locally under android/ and do not commit it.
+storeFile=release-key.jks
+storePassword=CHANGE_ME
+keyAlias=CHANGE_ME
+keyPassword=CHANGE_ME
