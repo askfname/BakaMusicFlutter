@@ -283,6 +283,45 @@ class PluginRouter {
     return null;
   }
 
+  /// 下载回退：跳过 LX，仅按用户所选音质直试原生插件；
+  /// accept 用于校验候选地址内容（如拦截错误页）
+  Future<(MediaItem, String)?> resolveNativeDetailedByKey(
+    MediaItem item,
+    String qualityKey, {
+    Future<bool> Function(MediaItem item)? accept,
+  }) async {
+    final plugin = findAdapterByPlatform(item.platform);
+    if (plugin == null) return null;
+    final current = await _maybeEnrich(plugin, item);
+    final res = await _resolveOneDetailed(plugin, current, qualityKey);
+    if (res != null && _isHttpUrl(res.$1.mediaUrl)) {
+      if (accept == null || await accept(res.$1)) {
+        developer.log(
+          '解析命中 ${current.platform}:${current.id} '
+          'quality=${res.$2}(requested=$qualityKey) via '
+          '${plugin.platform}(native-download-retry)',
+          name: 'BakaPlugin',
+          level: 500,
+        );
+        return res;
+      }
+      developer.log(
+        '原生下载候选不可用 ${current.platform}:${current.id} '
+        'quality=${res.$2}(requested=$qualityKey)',
+        name: 'BakaPlugin',
+        level: 900,
+      );
+    }
+    final url = current.qualities[qualityKey]?.url;
+    if (_isHttpUrl(url)) {
+      final candidate = current.copyWith(mediaUrl: url);
+      if (accept == null || await accept(candidate)) {
+        return (candidate, qualityKey);
+      }
+    }
+    return null;
+  }
+
   /// 供播放调用：默认音质优先向更低音质降级
   Future<MediaItem?> resolveForPlayback(
     MediaItem item,

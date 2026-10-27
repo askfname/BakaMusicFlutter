@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 
 import '../models/media_models.dart';
@@ -15,12 +17,45 @@ class DownloadDirectoryInfo {
   final bool custom;
 }
 
+/// 原生下载状态事件：status 为 success / failure，title 为歌曲名
+class DownloadEvent {
+  const DownloadEvent({
+    required this.status,
+    required this.title,
+    required this.message,
+  });
+
+  final String status;
+  final String title;
+  final String message;
+
+  bool get failed => status == 'failure';
+
+  static DownloadEvent? tryParse(Object? raw) {
+    if (raw is! Map) return null;
+    final status = '${raw['status'] ?? ''}'.trim();
+    if (status.isEmpty) return null;
+    return DownloadEvent(
+      status: status,
+      title: '${raw['title'] ?? ''}'.trim(),
+      message: '${raw['message'] ?? ''}'.trim(),
+    );
+  }
+}
+
 /// 音乐下载：交给 Android 原生 DownloadManager 或 SAF 前台服务，
 /// 默认保存到公共 Music/BakaMusic，用户也可在设置中选择自定义目录
 class DownloadHelper {
   DownloadHelper._();
 
   static const MethodChannel _channel = MethodChannel('baka_music/downloads');
+  static const EventChannel _eventChannel = EventChannel(
+    'baka_music/download_events',
+  );
+
+  static const String defaultUserAgent =
+      'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36';
 
   static final RegExp _invalidChars = RegExp(r'[\\/:*?"<>|]');
 
@@ -56,6 +91,15 @@ class DownloadHelper {
   static Future<String> enqueue(MediaItem item, MusicQuality quality) =>
       enqueueByKey(item, quality.key);
 
+  /// 下载请求头：保留插件头，缺少 UA 时使用统一默认值
+  static Map<String, String> requestHeaders(MediaItem item) {
+    final headers = <String, String>{...item.mediaHeaders};
+    if (!headers.keys.any((key) => key.toLowerCase() == 'user-agent')) {
+      headers['User-Agent'] = defaultUserAgent;
+    }
+    return headers;
+  }
+
   /// 按音质键下载，返回开始下载的提示文案
   static Future<String> enqueueByKey(MediaItem item, String qualityKey) async {
     final url = item.mediaUrl;
@@ -71,7 +115,7 @@ class DownloadHelper {
     final safeArtist = _sanitize(item.artist, '未知歌手');
     final message = await _channel.invokeMethod<String>('enqueue', {
       'url': url,
-      'headers': item.mediaHeaders,
+      'headers': requestHeaders(item),
       'fileName': '$safeTitle - $safeArtist.$ext',
       'mimeType': _mimeTypes[ext] ?? 'audio/mpeg',
       'title': safeTitle,
@@ -82,6 +126,14 @@ class DownloadHelper {
       throw StateError('下载服务未响应');
     }
     return message;
+  }
+
+  /// 真实下载状态流：默认目录由系统完成广播转换，自定义目录由前台服务上报
+  static Stream<DownloadEvent> get events async* {
+    await for (final raw in _eventChannel.receiveBroadcastStream()) {
+      final event = DownloadEvent.tryParse(raw);
+      if (event != null) yield event;
+    }
   }
 
   /// 读取当前下载目录；原生侧不可用时回退默认目录

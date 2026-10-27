@@ -11,6 +11,8 @@ import '../plugin/lx_source_manager.dart';
 import '../plugin/music_plugin_runtime.dart';
 import '../plugin/plugin_manager.dart';
 import '../plugin/plugin_router.dart';
+import '../util/download_helper.dart';
+import '../util/media_url_validator.dart';
 
 /// 搜索、歌单导入、播放地址与歌词的统一入口
 /// UI 与下载层应经由本服务调用，不直接选择插件；PluginRouter 按启用优先级路由
@@ -255,6 +257,61 @@ class MusicSourceService {
   Future<MediaItem?> resolveByKey(MediaItem item, String qualityKey) async {
     await ensureLoaded();
     return _router.resolveMediaByKey(item, qualityKey);
+  }
+
+  /// 下载解析：优先 LX，地址不可用或解析失败时回退原生插件；
+  /// LX 与原生都只尝试用户所选音质，不自动降档
+  Future<(MediaItem, String)?> resolveForDownload(
+    MediaItem item,
+    String qualityKey,
+  ) async {
+    await ensureLoaded();
+    (MediaItem, String, String)? first;
+    try {
+      first = await _router.resolveForPlaybackDetailed(
+        item,
+        qualityKey,
+        cascade: false,
+      );
+    } catch (error) {
+      developer.log(
+        '下载解析失败，回退原生插件 ${item.platform}:${item.id}: $error',
+        name: 'BakaPlugin',
+        level: 900,
+      );
+    }
+    if (first != null) {
+      final (media, quality, via) = first;
+      if (await _isDownloadUrlValid(media)) return (media, quality);
+      developer.log(
+        via.contains('LX')
+            ? '[LX] 下载地址无效，回退原生插件 ${item.platform}:${item.id}'
+            : '下载地址无效，重试原生插件 ${item.platform}:${item.id}',
+        name: 'BakaPlugin',
+        level: 900,
+      );
+    }
+    return _router.resolveNativeDetailedByKey(
+      item,
+      qualityKey,
+      accept: _isDownloadUrlValid,
+    );
+  }
+
+  Future<bool> _isDownloadUrlValid(MediaItem item) async {
+    final url = item.mediaUrl;
+    if (url == null || !url.toLowerCase().startsWith('http')) return false;
+    try {
+      await validateMediaUrl(url, DownloadHelper.requestHeaders(item));
+      return true;
+    } catch (error) {
+      developer.log(
+        '下载地址校验失败 ${item.platform}:${item.id}: $error',
+        name: 'BakaPlugin',
+        level: 900,
+      );
+      return false;
+    }
   }
 
   Future<MediaItem?> resolveForPlayback(

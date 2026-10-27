@@ -63,8 +63,8 @@ class MainViewModel extends ChangeNotifier {
   final PlaybackController playbackController;
   final PlayerSessionStore sessionStore;
 
-  /// Toast 出口：由根组件设置，SnackBar 展示
-  void Function(String message)? toastHandler;
+  /// Toast 出口：由根组件设置，error 控制错误样式
+  void Function(String message, {bool? error})? toastHandler;
 
   final Random _random = Random();
 
@@ -456,23 +456,15 @@ class MainViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 解析并入队下载，失败返回 null，由调用方带歌曲名提示
   Future<String?> downloadItem(MediaItem item, String quality) async {
-    MediaItem? resolved;
     try {
-      resolved = await sourceService.resolveByKey(item, quality);
+      final resolved = await sourceService.resolveForDownload(item, quality);
+      if (resolved == null) throw StateError('下载失败');
+      return await DownloadHelper.enqueueByKey(resolved.$1, resolved.$2);
     } catch (_) {
-      resolved = null;
+      return null;
     }
-    if (resolved?.mediaUrl?.toLowerCase().startsWith('http') == true) {
-      try {
-        return await DownloadHelper.enqueueByKey(resolved!, quality);
-      } catch (e) {
-        playError = '下载失败：$e';
-      }
-    } else {
-      playError = '该音质暂无可用下载地址';
-    }
-    return null;
   }
 
   /// 手动切换音质：只试所选单档，起播后恢复原进度
@@ -944,7 +936,8 @@ class MainViewModel extends ChangeNotifier {
     durationMs.value = clamped;
   }
 
-  void _toast(String message) => toastHandler?.call(message);
+  void _toast(String message, {bool? error}) =>
+      toastHandler?.call(message, error: error);
 
   @override
   void dispose() {

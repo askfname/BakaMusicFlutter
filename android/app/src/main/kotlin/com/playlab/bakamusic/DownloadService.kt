@@ -109,7 +109,10 @@ object DownloadCoordinator {
                 runCatching { addRequestHeader(key, value) }
             }
         }
-        manager.enqueue(request)
+        manager.enqueue(request).also { id ->
+            // 登记任务，完成广播到达时用于回传歌曲名
+            DownloadEvents.track(id, title)
+        }
         return "已开始下载到 Music/BakaMusic"
     }
 
@@ -410,6 +413,7 @@ class DownloadService : Service() {
             .setAutoCancel(true)
             .build()
         manager.notify(NOTIFICATION_ID, notification)
+        DownloadEvents.notifySuccess(request.title)
     }
 
     private fun notifyFailure(request: DownloadRequest, message: String) {
@@ -422,6 +426,7 @@ class DownloadService : Service() {
             .setAutoCancel(true)
             .build()
         manager.notify(NOTIFICATION_ID, notification)
+        DownloadEvents.notifyFailure(request.title, message)
     }
 
     private fun buildProgressNotification(

@@ -17,7 +17,10 @@ import '../data/player_session_store.dart';
 import '../models/media_models.dart';
 import '../service/music_source_service.dart';
 import '../util/common_utils.dart';
+import '../util/download_helper.dart';
 import '../util/playback_controller.dart';
+import 'app_toast.dart';
+import 'download_feedback.dart';
 import 'home_screen.dart';
 import 'main_view_model.dart';
 import 'player_components.dart';
@@ -119,6 +122,7 @@ class _MainScreenState extends State<MainScreen>
   double _dockWasted = 0;
 
   String? _lastNowKey;
+  StreamSubscription<DownloadEvent>? _downloadEvents;
 
   @override
   void initState() {
@@ -137,6 +141,11 @@ class _MainScreenState extends State<MainScreen>
       duration: const Duration(milliseconds: 350),
     );
     _vm.addListener(_onVmChanged);
+    // 订阅原生真实下载状态：失败时带上歌曲名提示
+    _downloadEvents = DownloadHelper.events.listen(
+      _onDownloadEvent,
+      onError: (_) {},
+    );
     // 启动即确保底座可见
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _settleDock(show: true, durMs: 350);
@@ -145,12 +154,20 @@ class _MainScreenState extends State<MainScreen>
 
   @override
   void dispose() {
+    unawaited(_downloadEvents?.cancel());
+    _downloadEvents = null;
     _vm.removeListener(_onVmChanged);
     _vm.toastHandler = null;
     _dockController.dispose();
     _frozenZero.dispose();
     _vm.dispose();
     super.dispose();
+  }
+
+  /// 原生下载完成广播：成功依赖系统通知，失败才提示
+  void _onDownloadEvent(DownloadEvent event) {
+    if (!event.failed || !mounted) return;
+    showDownloadFailureToast(context, event.title);
   }
 
   // --------------------------------------------------------------- 底座显隐
@@ -263,10 +280,13 @@ class _MainScreenState extends State<MainScreen>
     }
   }
 
-  void _showToast(String message) {
+  void _showToast(String message, {bool? error}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
+    AppToast.show(
+      context,
+      message,
+      kind: error == true ? AppToastKind.error : AppToastKind.info,
+    );
   }
 
   // --------------------------------------------------------------- 交互动作
@@ -341,10 +361,12 @@ class _MainScreenState extends State<MainScreen>
     if (item == null) return;
     final quality = await showDownloadQualityDialog(context, item);
     if (quality == null || !mounted) return;
+    await showDownloadStartedToast(context);
+    if (!mounted) return;
     final message = await _vm.downloadItem(item, quality);
-    if (!mounted || message == null) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
+    if (!mounted) return;
+    // 入队失败立即提示；已经入队的下载失败由原生事件回传
+    if (message == null) showDownloadFailureToast(context, item.title);
   }
 
   Future<void> _openAddPlaylistDialog() async {

@@ -19,6 +19,7 @@ import '../service/music_source_service.dart';
 import '../util/artwork_headers.dart';
 import '../util/common_utils.dart';
 import '../util/download_helper.dart';
+import 'download_feedback.dart';
 
 // ---------------------------------------------------------------------------
 // 每日推荐持久化：日期/平台/榜单，跨天或换平台时重新抽取
@@ -1158,7 +1159,8 @@ Future<String?> showAddPlaylistDialog(
   );
 }
 
-/// 下载流程：选择音质 → 解析地址 → 入队下载，失败弹窗提示
+/// 下载流程：选择音质 → 提示目标目录 → 解析地址 → 入队下载；
+/// 失败时提示歌曲名，后续真实下载失败由原生事件补充提示
 Future<void> downloadMediaWithQualityDialog(
   BuildContext context,
   MusicSourceService sourceService,
@@ -1166,41 +1168,16 @@ Future<void> downloadMediaWithQualityDialog(
 ) async {
   final quality = await showDownloadQualityDialog(context, item);
   if (quality == null || !context.mounted) return;
-  MediaItem? resolved;
+  await showDownloadStartedToast(context);
+  if (!context.mounted) return;
   try {
-    resolved = await sourceService.resolveByKey(item, quality);
-  } catch (_) {}
-  final target = resolved;
-  final url = target?.mediaUrl;
-  if (target == null || url == null || !url.toLowerCase().startsWith('http')) {
-    if (context.mounted) await _showDownloadMessage(context, '该音质暂无可用下载地址');
-    return;
-  }
-  try {
-    final message = await DownloadHelper.enqueueByKey(target, quality);
-    if (context.mounted) await _showDownloadMessage(context, message);
-  } catch (error) {
-    if (context.mounted) {
-      await _showDownloadMessage(context, '下载失败：${errorTextOf(error, '未知错误')}');
-    }
+    final resolved = await sourceService.resolveForDownload(item, quality);
+    if (resolved == null) throw StateError('下载失败');
+    await DownloadHelper.enqueueByKey(resolved.$1, resolved.$2);
+  } catch (_) {
+    if (context.mounted) showDownloadFailureToast(context, item.title);
   }
 }
-
-/// 下载提示弹窗
-Future<void> _showDownloadMessage(BuildContext context, String message) =>
-    showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('下载提示'),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('确定'),
-          ),
-        ],
-      ),
-    );
 
 /// 加歌单流程：选择歌单 → 写入本地
 Future<void> addMediaToPlaylistWithDialog(

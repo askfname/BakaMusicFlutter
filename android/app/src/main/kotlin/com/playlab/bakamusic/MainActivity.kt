@@ -68,6 +68,9 @@ class MainActivity : AudioServiceActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // 下载状态：默认目录监听系统完成广播，自定义目录由下载服务上报
+        DownloadEvents.attach(this, flutterEngine.dartExecutor.binaryMessenger)
     }
 
     // ------------------------------------------------------------ 下载目录
