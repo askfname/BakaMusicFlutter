@@ -98,25 +98,34 @@ class LxPluginHost {
     return sources;
   }
 
-  /// 调用脚本 request handler 取流，返回经探针校验的播放地址
+  /// 调用脚本 request handler 取流，返回经探针校验的播放地址。
+  /// timeout 为单档总预算（脚本执行 + 探针），超时后由调用方回退原生。
   Future<String> invoke(
     String hash,
     String source,
     String quality,
-    String musicInfoJson,
-  ) async {
+    String musicInfoJson, {
+    Duration timeout = _invokeTimeout,
+    Duration probeTimeout = _probeTimeout,
+  }) async {
     final hosted = _hosted[hash];
     if (hosted == null) throw LxHostException('LX 脚本未加载');
     if (!(hosted.sources[source]?.qualities.contains(quality) ?? false)) {
       throw LxHostException('LX 不支持该音质: $quality');
     }
+    // 给探针预留最多一半预算，脚本执行不能吃满整档时间
+    final reserveMs = probeTimeout.inMilliseconds < timeout.inMilliseconds ~/ 2
+        ? probeTimeout.inMilliseconds
+        : timeout.inMilliseconds ~/ 2;
+    final invokeTimeout = timeout - Duration(milliseconds: reserveMs);
+    final startedAt = DateTime.now();
     final String result;
     try {
       result = await hosted.worker.invokeLx(
         source,
         quality,
         musicInfoJson,
-        timeout: _invokeTimeout,
+        timeout: invokeTimeout,
       );
     } on PluginWorkerTimeoutException {
       // 超时终止在途调用，仅该脚本 worker 受影响
@@ -134,7 +143,14 @@ class LxPluginHost {
     if (url.isEmpty || url.length > _maxUrlLength) {
       throw LxHostException('LX 脚本返回了无效的播放地址');
     }
-    await _probe(url);
+    // 探针只校验首字节，网络差时不能让它拖住整档解析
+    final elapsed = DateTime.now().difference(startedAt);
+    var probeLimit = timeout - elapsed;
+    if (probeLimit > probeTimeout) probeLimit = probeTimeout;
+    if (probeLimit <= Duration.zero) {
+      throw LxProbeException('LX 地址校验超时');
+    }
+    await _probe(url, timeout: probeLimit);
     return url;
   }
 
@@ -178,14 +194,19 @@ class LxPluginHost {
   }
 
   /// 取流探针：Range 首字节，200/206 才算可用
-  Future<void> _probe(String url) async {
+  Future<void> _probe(String url, {Duration timeout = _probeTimeout}) async {
     final scheme = url.toLowerCase();
     if (!scheme.startsWith('http://') && !scheme.startsWith('https://')) {
       throw LxHostException('LX 播放地址无效');
     }
     var current = url;
     var redirects = 0;
+    final deadline = DateTime.now().add(timeout);
     while (true) {
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= Duration.zero) {
+        throw LxProbeException('LX 地址校验超时');
+      }
       final uri = Uri.tryParse(current);
       var host = uri?.host ?? '';
       if (uri == null || host.isEmpty) throw LxHostException('LX 播放地址无效');
@@ -193,14 +214,14 @@ class LxPluginHost {
       if (await isPluginPrivateHost(host)) {
         throw LxHostException('LX 不能访问本机或内网地址');
       }
-      final client = HttpClient()..connectionTimeout = _probeTimeout;
+      final client = HttpClient()..connectionTimeout = timeout;
       _openClients.add(client);
       try {
         final request = await client.getUrl(uri);
         request.followRedirects = false;
         request.headers.set(HttpHeaders.userAgentHeader, mediaUserAgent);
         request.headers.set('Range', 'bytes=0-1');
-        final response = await request.close().timeout(_probeTimeout);
+        final response = await request.close().timeout(remaining);
         final code = response.statusCode;
         if (code >= 300 && code <= 399 && redirects < _maxRedirects) {
           final location =

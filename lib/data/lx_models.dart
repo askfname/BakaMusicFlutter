@@ -4,7 +4,7 @@ library;
 import 'dart:convert';
 
 import '../models/media_models.dart'
-    show MediaItem, QualityInfo, qualityKeysOrdered;
+    show MediaItem, QualityInfo, qualityFallbackLadder, qualityKeysOrdered;
 
 /// LX 取流源
 const List<String> lxSources = ['kw', 'kg', 'tx', 'wy', 'mg'];
@@ -225,18 +225,10 @@ Map<String, LxSourceDescriptor> parseLxSourcesDeclared(
   return out;
 }
 
-/// LX 降级顺序：本档起逐级向低，仅保留声明支持的音质；
-/// 未知音质仅在其被声明支持时返回自身
-List<String> lxQualityFallbacks(String requested, Set<String> override) {
-  final index = qualityKeysOrdered.indexOf(requested);
-  if (index < 0) return override.contains(requested) ? [requested] : const [];
-  final out = <String>[];
-  final ladder = [requested, ...qualityKeysOrdered.sublist(0, index).reversed];
-  for (final key in ladder) {
-    if (override.contains(key)) out.add(key);
-  }
-  return out;
-}
+/// LX 降级顺序：与播放共用通用档位阶梯，仅保留脚本声明支持的音质；
+/// 高规格档位直接回落到 flac/320k 等通用档，避免逐档等待变体。
+List<String> lxQualityFallbacks(String requested, Set<String> override) =>
+    qualityFallbackLadder(requested, available: override);
 
 /// 以 LX 音质集重写条目 qualities：useSupported 时取脚本声明全集，
 /// 否则仅保留条目本身已有的档位；已存在的档位保真大小/码率

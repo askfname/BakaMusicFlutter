@@ -272,6 +272,7 @@ class MusicSourceService {
         item,
         qualityKey,
         cascade: false,
+        lxFirst: true,
       );
     } catch (error) {
       developer.log(
@@ -328,6 +329,7 @@ class MusicSourceService {
     Set<String> excludeQualities = const {},
     bool cascade = true,
     void Function(String quality, int? size, String via)? onTrying,
+    Duration? budget,
   }) async {
     await ensureLoaded();
     return _router.resolveForPlaybackDetailed(
@@ -336,6 +338,7 @@ class MusicSourceService {
       excludeQualities: excludeQualities,
       cascade: cascade,
       onTrying: onTrying,
+      budget: budget,
     );
   }
 
@@ -346,6 +349,21 @@ class MusicSourceService {
   ) async {
     await ensureLoaded();
     return _router.resolveNativeDetailed(item, qualityKey);
+  }
+
+  /// Source error 后仅走原生同档回退：短超时，失败返回 null，不阻塞降档
+  Future<(MediaItem, String, String)?> resolveNativeFallback(
+    MediaItem item,
+    String qualityKey,
+  ) async {
+    await ensureLoaded();
+    try {
+      return await _router
+          .resolveNativeDetailed(item, qualityKey)
+          .timeout(const Duration(milliseconds: playRetryResolveBudgetMs));
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<LyricSource?> lyrics(MediaItem item) async {

@@ -189,11 +189,14 @@ class MainViewModel extends ChangeNotifier {
 
   // ---------------------------------------------------------------- 对外动作
 
-  /// 播放指定曲目：整轮解析完成后起播，loading 期展示尝试档位
+  /// 播放指定曲目：整轮解析完成后起播，loading 期展示尝试档位。
+  /// [startQuality] 用于失败后从指定档位继续降级，[resolveBudget] 控制整轮解析预算。
   void startTrack(
     MediaItem item,
     int index, {
     Set<String> excludeQualities = const {},
+    String? startQuality,
+    Duration resolveBudget = const Duration(milliseconds: playResolveBudgetMs),
   }) {
     _playToken++;
     final token = _playToken;
@@ -204,8 +207,8 @@ class MainViewModel extends ChangeNotifier {
     _setPosition(0);
     _setDuration(item.durationMs);
     queueIndex = index;
-    // 占位用默认播放音质（实际解析起点），加载中/失败不再误显示最高音质
-    final start = _defaultPlayQuality;
+    // 占位用本轮解析起点，加载中/失败不再误显示最高音质
+    final start = startQuality ?? _defaultPlayQuality;
     _setNowPlaying(
       NowPlaying(
         item: item,
@@ -215,7 +218,16 @@ class MainViewModel extends ChangeNotifier {
         loading: true,
       ),
     );
-    unawaited(_resolveAndPlay(token, item, index, excludeQualities));
+    unawaited(
+      _resolveAndPlay(
+        token,
+        item,
+        index,
+        excludeQualities,
+        startQuality,
+        resolveBudget,
+      ),
+    );
   }
 
   Future<void> _resolveAndPlay(
@@ -223,12 +235,15 @@ class MainViewModel extends ChangeNotifier {
     MediaItem item,
     int index,
     Set<String> excludeQualities,
+    String? startQuality,
+    Duration resolveBudget,
   ) async {
     var resolveEmpty = false;
     var timedOut = false;
     var otherError = false;
     NowPlaying? np;
     final key = item.key;
+    final requestedQuality = startQuality ?? _defaultPlayQuality;
 
     if (item.platform == 'BakaMusic') {
       final url = (item.mediaUrl ?? '');
@@ -249,7 +264,7 @@ class MainViewModel extends ChangeNotifier {
         _resolvedCache.clear();
         _resolvedCacheGen = genNow;
       }
-      if (excludeQualities.isEmpty) {
+      if (excludeQualities.isEmpty && startQuality == null) {
         final cached = _resolvedCache[key];
         if (cached != null) np = cached;
       }
@@ -259,8 +274,9 @@ class MainViewModel extends ChangeNotifier {
           r = await sourceService
               .resolveForPlaybackDetailed(
                 item,
-                _defaultPlayQuality,
+                requestedQuality,
                 excludeQualities: excludeQualities,
+                budget: resolveBudget,
                 onTrying: (trying, tryingSize, tryingVia) {
                   // 自动逐级重试时界面实时跟随当前尝试档（含 LX 插件名）
                   if (token != _playToken) return;
@@ -276,7 +292,7 @@ class MainViewModel extends ChangeNotifier {
                   }
                 },
               )
-              .timeout(const Duration(milliseconds: playResolveTimeoutMs));
+              .timeout(resolveBudget + const Duration(milliseconds: 2000));
         } on TimeoutException {
           timedOut = true;
         } on MediaResolveTimeoutException {
@@ -284,22 +300,16 @@ class MainViewModel extends ChangeNotifier {
         } catch (_) {
           otherError = true;
         }
-        if (timedOut) {
+        if (timedOut || otherError) {
           if (token == _playToken) {
             final cur = _nowPlaying;
             if (cur?.key == key) _setNowPlaying(cur!.copyWith(loading: false));
-            _playerError = '播放器错误 3003：Source error';
-            _playerErrorRetry = false;
-            notifyListeners();
-          }
-          return;
-        }
-        if (otherError) {
-          if (token == _playToken) {
-            final cur = _nowPlaying;
-            if (cur?.key == key) _setNowPlaying(cur!.copyWith(loading: false));
-            _playerError = '该歌曲暂无可用音源';
-            _playerErrorRetry = false;
+            _playerError = timedOut ? '音源加载超时，请稍后重试' : '该歌曲暂无可用音源';
+            _playerErrorRetry = _hasLowerQuality(
+              item,
+              requestedQuality,
+              excludeQualities,
+            );
             notifyListeners();
           }
           return;
@@ -338,8 +348,13 @@ class MainViewModel extends ChangeNotifier {
       if (cur?.key == key) _setNowPlaying(cur!.copyWith(loading: false));
       // 解析返回空（非取消/超时异常）时补齐失败弹窗
       if (resolveEmpty) {
+        _resolvedCache.remove(key);
         _playerError = '该歌曲暂无可用音源';
-        _playerErrorRetry = false;
+        _playerErrorRetry = _hasLowerQuality(
+          item,
+          requestedQuality,
+          excludeQualities,
+        );
         notifyListeners();
       }
       return;
@@ -425,25 +440,36 @@ class MainViewModel extends ChangeNotifier {
 
   void stepPrev() => advance(-1);
 
-  /// 当前显示档的下一低档（仅歌曲已声明的），没有则返回 null
+  /// 当前显示档的下一低档（优先歌曲已声明的通用档），没有则返回 null
   String? lowerQualityKey(MediaItem item, String fromKey) {
-    final idx = qualityKeysOrdered.indexOf(fromKey);
-    if (idx < 0) return null;
-    for (final key in qualityKeysOrdered.sublist(0, idx).reversed) {
-      if (item.qualities.containsKey(key)) return key;
+    final available = item.qualities.keys.toSet();
+    final ladder = qualityFallbackLadder(
+      fromKey,
+      available: available.isEmpty ? null : available,
+      max: qualityKeysOrdered.length,
+    );
+    final fromRank = qualityRankOf(fromKey);
+    for (final key in ladder) {
+      if (key != fromKey && qualityRankOf(key) < fromRank) return key;
     }
     return null;
   }
 
-  /// Source error 自动降档用：按全局顺序取下一低档（不要求已声明）
-  String? nextLowerOrdered(String fromKey, Set<String> exclude) {
-    final idx = qualityKeysOrdered.indexOf(fromKey);
-    if (idx < 0) return null;
-    for (final key in qualityKeysOrdered.sublist(0, idx).reversed) {
+  /// Source error 自动降档：取下一档并跳过已排除档位
+  String? nextLowerQuality(String fromKey, Set<String> exclude) {
+    final ladder = qualityFallbackLadder(
+      fromKey,
+      max: qualityKeysOrdered.length,
+    );
+    for (final key in ladder.skip(1)) {
       if (!exclude.contains(key)) return key;
     }
     return null;
   }
+
+  bool _hasLowerQuality(MediaItem item, String fromKey, Set<String> exclude) =>
+      nextLowerQuality(fromKey, exclude) != null ||
+      lowerQualityKey(item, fromKey) != null;
 
   /// 手动切音质失败后的单步降级：只低一档，不自动级联
   void retryLowerQuality() {
@@ -451,7 +477,10 @@ class MainViewModel extends ChangeNotifier {
     if (cur == null) return;
     _playerError = null;
     _playerErrorRetry = false;
-    final lower = lowerQualityKey(cur.item, cur.qualityKey);
+    // LX 声明档可能多于原生 qualities，逐档兜底一次
+    final lower =
+        lowerQualityKey(cur.item, cur.qualityKey) ??
+        nextLowerQuality(cur.qualityKey, const {});
     if (lower != null) switchQuality(cur.item, lower);
     notifyListeners();
   }
@@ -490,6 +519,7 @@ class MainViewModel extends ChangeNotifier {
     if (before != null && before.key == itemKey) {
       _setNowPlaying(
         before.copyWith(
+          mediaUrl: '',
           qualityKey: newKey,
           size: item.qualities[newKey]?.size ?? before.size,
           loading: true,
@@ -504,6 +534,7 @@ class MainViewModel extends ChangeNotifier {
             item,
             newKey,
             cascade: false,
+            budget: const Duration(milliseconds: playResolveBudgetMs),
             onTrying: (trying, tryingSize, tryingVia) {
               if (token != _playToken) return;
               final cur = _nowPlaying;
@@ -518,7 +549,7 @@ class MainViewModel extends ChangeNotifier {
               }
             },
           )
-          .timeout(const Duration(milliseconds: playResolveTimeoutMs));
+          .timeout(const Duration(milliseconds: playResolveBudgetMs + 2000));
     } on TimeoutException {
       _switchQualityFailed(token, itemKey, item, newKey, timeout: true);
       return;
@@ -584,8 +615,8 @@ class MainViewModel extends ChangeNotifier {
     if (token != _playToken) return;
     final cur = _nowPlaying;
     if (cur?.key == itemKey) _setNowPlaying(cur!.copyWith(loading: false));
-    _playerError = timeout ? '播放器错误 3003：Source error' : '该歌曲暂无可用音源';
-    _playerErrorRetry = lowerQualityKey(item, newKey) != null;
+    _playerError = timeout ? '音源加载超时，请稍后重试' : '该歌曲暂无可用音源';
+    _playerErrorRetry = _hasLowerQuality(item, newKey, const {});
     notifyListeners();
   }
 
@@ -644,9 +675,10 @@ class MainViewModel extends ChangeNotifier {
         msg.contains('2001') ||
         msg.contains('2004') ||
         msg.contains('3003');
-    // 自动换源/降档重试期间，同一失败会被播放器错误流与加载异常各报一次；
-    // 加载中的后续上报直接忽略，避免重试尚未结束时误弹失败框
-    if (cur != null && cur.loading && isSourceError) return;
+    // 解析中还没有新媒体地址时，上报的源错误只可能来自正在退场的旧流
+    if (cur != null && cur.loading && cur.mediaUrl.isEmpty && isSourceError) {
+      return;
+    }
     String? next;
     if (cur != null && isSourceError) {
       for (final u in cur.backupUrls) {
@@ -676,26 +708,37 @@ class MainViewModel extends ChangeNotifier {
       return;
     }
     // Source error 且无备用地址时自动降档重试，耗尽才弹框
-    if (cur != null && isSourceError && !cur.loading) {
+    if (cur != null && isSourceError) {
       final key = cur.key;
       final failed = cur.qualityKey;
-      // LX 直链失败时先同档直试原生（同档 URL 不同源，原生可能可用），避免误降档
-      if (cur.via.contains('LX')) {
-        _setNowPlaying(cur.copyWith(loading: true, via: ''));
-        unawaited(_lxFallbackNative(cur, failed, msg));
-        return;
-      }
+      // 失效地址立即出缓存，避免重播继续命中坏源
+      _resolvedCache.remove(key);
       final acc = {...?_playExcludes[key], failed};
       _playExcludes[key] = acc;
-      // 按全局顺序降档（LX 声明集常大于原生 qualities，不能仅看已声明）
-      final lower = nextLowerOrdered(failed, acc);
+      // LX 直链失败时先同档直试原生（同档 URL 不同源，原生可能可用），避免误降档
+      if (cur.via.contains('LX')) {
+        _setNowPlaying(cur.copyWith(mediaUrl: '', loading: true, via: ''));
+        unawaited(_lxFallbackNative(cur, failed, msg, acc));
+        return;
+      }
+      final lower = nextLowerQuality(failed, acc);
       if (lower != null) {
-        startTrack(cur.item, _queueIndex, excludeQualities: acc);
+        startTrack(
+          cur.item,
+          _queueIndex,
+          excludeQualities: acc,
+          startQuality: lower,
+          resolveBudget: const Duration(milliseconds: playRetryResolveBudgetMs),
+        );
         return;
       }
     }
     _playerError = msg;
-    _playerErrorRetry = false;
+    _playerErrorRetry = cur != null && isSourceError
+        ? _hasLowerQuality(cur.item, cur.qualityKey, {
+            ...?_playExcludes[cur.key],
+          })
+        : false;
     final latest = _nowPlaying;
     if (latest?.loading == true) {
       _setNowPlaying(latest!.copyWith(loading: false));
@@ -707,15 +750,11 @@ class MainViewModel extends ChangeNotifier {
     NowPlaying cur,
     String failed,
     String originalMsg,
+    Set<String> acc,
   ) async {
     final token = ++_playToken;
     final key = cur.key;
-    (MediaItem, String, String)? native;
-    try {
-      native = await sourceService.resolveNativeDetailed(cur.item, failed);
-    } catch (_) {
-      native = null;
-    }
+    final native = await sourceService.resolveNativeFallback(cur.item, failed);
     if (token != _playToken) return;
     if (native != null) {
       final (res, q, via) = native;
@@ -747,16 +786,19 @@ class MainViewModel extends ChangeNotifier {
         return;
       }
     }
-    // 原生同档亦无可用时转入常规降档（排除已失败档）
-    final acc = {...?_playExcludes[key], failed};
-    _playExcludes[key] = acc;
-    final lower = nextLowerOrdered(failed, acc);
+    // 原生同档亦无可用时从下一档继续，避免重复尝试已失败档位
+    final lower = nextLowerQuality(failed, acc);
     if (lower != null) {
-      unawaited(playbackController.clear());
-      startTrack(cur.item, _queueIndex, excludeQualities: acc);
+      startTrack(
+        cur.item,
+        _queueIndex,
+        excludeQualities: acc,
+        startQuality: lower,
+        resolveBudget: const Duration(milliseconds: playRetryResolveBudgetMs),
+      );
     } else {
       _playerError = originalMsg;
-      _playerErrorRetry = false;
+      _playerErrorRetry = _hasLowerQuality(cur.item, failed, acc);
       final latest = _nowPlaying;
       if (latest?.key == key && latest!.loading) {
         _setNowPlaying(latest.copyWith(loading: false));

@@ -86,4 +86,31 @@ void main() {
       expect(formatSize(3 * 1024 * 1024), '3.0 MB');
     });
   });
+
+  group('音质降级阶梯', () {
+    test('通用档位逐级向低，最多 4 档', () {
+      expect(qualityFallbackLadder('320k'), ['320k', '192k', '128k', '96k']);
+    });
+
+    test('高规格先回落 flac，不再遍历专属变体', () {
+      expect(qualityFallbackLadder('master'), [
+        'master',
+        'flac',
+        '320k',
+        '192k',
+      ]);
+    });
+
+    test('按已声明档位过滤', () {
+      expect(qualityFallbackLadder('320k', available: {'320k', '128k'}), [
+        '320k',
+        '128k',
+      ]);
+      expect(qualityFallbackLadder('flac', available: {'128k'}), ['128k']);
+    });
+
+    test('未知档位只尝试自身', () {
+      expect(qualityFallbackLadder('unknown'), ['unknown']);
+    });
+  });
 }

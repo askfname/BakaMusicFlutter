@@ -91,6 +91,25 @@ globalThis.lx.send('inited', {
 });
 ''';
 
+/// 挂起 LX 脚本：request 处理器死循环，模拟取流脚本卡住不返回
+const String _lxHangingScriptSource = r'''
+/*
+ * @name 挂起LX脚本
+ * @version 9.9.9
+ * @author BakaSmoke
+ */
+globalThis.lx.on('request', function (context) {
+  if (context.action !== 'musicUrl') return null;
+  while (true) {}
+});
+globalThis.lx.send('inited', {
+  sources: {
+    kw: { name: '酷我挂起', type: 'music', actions: ['musicUrl'], qualitys: ['96k', '128k', '320k', 'flac'] }
+  },
+  openDevTools: false
+});
+''';
+
 /// 合成原生插件：无网络依赖，取流直接返回静态地址
 const String _lxNativePluginSource = r'''
 module.exports = {
@@ -357,8 +376,63 @@ void main() {
     expect(result!.$2, '128k');
     expect(result.$3, isEmpty);
     expect(result.$1.mediaUrl, 'https://example.com/native-128k.mp3');
-    expect(tries.first, '128k| · LX·合成LX脚本');
-    expect(tries, contains('96k| · LX·合成LX脚本'));
-    expect(tries.last, '128k|');
+    // 同档竞速：LX 与原生都从 128k 开始，不再先串行降到 LX 96k
+    expect(tries, contains('128k| · LX·合成LX脚本'));
+  });
+
+  testWidgets('LX 挂起时原生按 hedge 窗口接管', (tester) async {
+    final pluginManager = await PluginManager.create();
+    final lxManager = await LxSourceManager.create();
+    final runtime = MusicPluginRuntime();
+    addTearDown(() async {
+      await runtime.destroy();
+      await _drainLx(lxManager);
+      await lxManager.close();
+    });
+    await _drainLx(lxManager);
+    final lxFile = _writeTempScript(
+      'lx_hang',
+      'hang_lx.js',
+      _lxHangingScriptSource,
+    );
+    final lxInstalled = await lxManager.installLocal(lxFile);
+    await lxManager.setActive(lxInstalled.hash);
+    await lxManager.loadEnabled();
+
+    final pluginFile = _writeTempScript(
+      'lx_hang_native',
+      'kw_hang_native.js',
+      _lxNativePluginSource,
+    );
+    final installedPlugin = await pluginManager.installLocal(pluginFile);
+    final loaded = await runtime.loadPlugin(
+      id: installedPlugin.id,
+      name: installedPlugin.name,
+      version: installedPlugin.version,
+      source: await pluginManager.readPluginSource(installedPlugin),
+    );
+    expect(loaded, isNotNull);
+    final router = PluginRouter(pluginManager)
+      ..lxResolver = LxResolver(lxManager)
+      ..replaceAll([(installedPlugin, loaded!)]);
+
+    final item = MediaItem(
+      id: 'kw-1',
+      platform: '酷我音乐',
+      title: '合成曲目',
+      artist: '测试',
+      qualities: {
+        for (final quality in const ['96k', '128k', '320k', 'flac'])
+          quality: const QualityInfo(),
+      },
+    );
+    final sw = Stopwatch()..start();
+    final result = await router.resolveForPlaybackDetailed(item, '128k');
+    sw.stop();
+    expect(result, isNotNull);
+    expect(result!.$2, '128k');
+    expect(result.$1.mediaUrl, 'https://example.com/native-128k.mp3');
+    // LX 仍挂起时，原生应在 1s hedge 后接管，而不是等 LX 单档超时
+    expect(sw.elapsed, lessThan(const Duration(seconds: 3)));
   });
 }

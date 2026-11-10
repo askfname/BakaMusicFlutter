@@ -40,12 +40,16 @@ class PlaybackController extends audio.BaseAudioHandler with audio.SeekHandler {
     _subscriptions.addAll([
       _player.playbackEventStream.listen(
         (_) => _broadcast(),
-        onError: (Object e, StackTrace st) => _notifyError('播放器错误: $e'),
+        onError: (Object e, StackTrace st) {
+          _disarmLoadWatchdog();
+          _notifyError('播放器错误: $e');
+        },
       ),
       _player.playerStateStream.listen(_onPlayerState),
-      _player.errorStream.listen(
-        (e) => _notifyError('播放器错误 ${e.code}: ${e.message ?? '未知错误'}'),
-      ),
+      _player.errorStream.listen((e) {
+        _disarmLoadWatchdog();
+        _notifyError('播放器错误 ${e.code}: ${e.message ?? '未知错误'}');
+      }),
       _player.currentIndexStream.listen(_onIndexChanged),
       _player.durationStream.listen(
         (d) => _durationMs = d?.inMilliseconds ?? 0,
@@ -74,7 +78,29 @@ class PlaybackController extends audio.BaseAudioHandler with audio.SeekHandler {
   bool _lastCompleted = false;
   bool _lastReadyPlaying = false;
 
+  /// 起播看门狗：just_audio 长时间卡在 loading 时主动中止并交由上层换源
+  Timer? _loadWatchdog;
+  int _loadWatchdogSeq = 0;
+  static const Duration _loadWatchdogTimeout = Duration(seconds: 12);
+
   Future<void> _ops = Future.value();
+
+  void _armLoadWatchdog() {
+    _loadWatchdog?.cancel();
+    final seq = ++_loadWatchdogSeq;
+    _loadWatchdog = Timer(_loadWatchdogTimeout, () {
+      if (seq != _loadWatchdogSeq) return;
+      _loadWatchdog = null;
+      unawaited(_player.stop().catchError((Object _) {}));
+      _notifyError('播放器错误 3003: Source error');
+    });
+  }
+
+  void _disarmLoadWatchdog() {
+    _loadWatchdogSeq++;
+    _loadWatchdog?.cancel();
+    _loadWatchdog = null;
+  }
 
   /// 串行执行会改动播放源的操作，避免清空与新加载互相打断
   Future<T> _serialize<T>(Future<T> Function() action) {
@@ -116,11 +142,14 @@ class PlaybackController extends audio.BaseAudioHandler with audio.SeekHandler {
       _itemCount = 1;
       _ended = false;
       queue.add([_toAudioItem(item)]);
+      _armLoadWatchdog();
       await _player.setAudioSources([_toSource(item)], initialIndex: 0);
       _startPlayback();
     } on PlayerInterruptedException {
       // 被更新的播放/清空操作打断，属正常切换
+      _disarmLoadWatchdog();
     } catch (e) {
+      _disarmLoadWatchdog();
       _notifyError('播放失败：$e');
     }
   }
@@ -149,6 +178,7 @@ class PlaybackController extends audio.BaseAudioHandler with audio.SeekHandler {
       _itemCount = valid.length;
       _ended = false;
       queue.add(valid.map(_toAudioItem).toList());
+      _armLoadWatchdog();
       await _player.setAudioSources(
         valid.map(_toSource).toList(),
         initialIndex: index,
@@ -156,7 +186,9 @@ class PlaybackController extends audio.BaseAudioHandler with audio.SeekHandler {
       _startPlayback();
     } on PlayerInterruptedException {
       // 被更新的播放/清空操作打断，属正常切换
+      _disarmLoadWatchdog();
     } catch (e) {
+      _disarmLoadWatchdog();
       _notifyError('播放失败：$e');
     }
   }
@@ -169,6 +201,7 @@ class PlaybackController extends audio.BaseAudioHandler with audio.SeekHandler {
 
   @override
   Future<void> stop() => _serialize(() async {
+    _disarmLoadWatchdog();
     await _player.stop();
     await super.stop();
   });
@@ -177,6 +210,7 @@ class PlaybackController extends audio.BaseAudioHandler with audio.SeekHandler {
   Future<void> clear() => _serialize(_clear);
 
   Future<void> _clear() async {
+    _disarmLoadWatchdog();
     await _player.stop();
     _queue = const [];
     _itemIndex = 0;
@@ -245,6 +279,7 @@ class PlaybackController extends audio.BaseAudioHandler with audio.SeekHandler {
   Future<void> _release() async {
     if (_released) return;
     _released = true;
+    _disarmLoadWatchdog();
     for (final s in _subscriptions) {
       await s.cancel();
     }
@@ -289,6 +324,10 @@ class PlaybackController extends audio.BaseAudioHandler with audio.SeekHandler {
   );
 
   void _onPlayerState(PlayerState state) {
+    if (state.processingState == ProcessingState.ready ||
+        state.processingState == ProcessingState.completed) {
+      _disarmLoadWatchdog();
+    }
     _buffering =
         state.processingState == ProcessingState.buffering ||
         state.processingState == ProcessingState.loading;

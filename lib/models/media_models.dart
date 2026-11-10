@@ -1,6 +1,30 @@
 /// 点播解析整体超时：超时终止请求，并按失败原因显示对应的播放提示
 const int playResolveTimeoutMs = 20000;
 
+/// 单次音源解析尝试上限：超时直接视为该档不可用，立即换下一候选
+const int resolveAttemptTimeoutMs = 5500;
+
+/// 首播解析整体预算：LX 与原生多档重试共享，耗尽后不再等待
+const int playResolveBudgetMs = 12000;
+
+/// Source error 后的重试预算：更短，优先快速恢复播放
+const int playRetryResolveBudgetMs = 8000;
+
+/// 元信息补全等待上限：超时取消，避免阻塞取流
+const int resolveEnrichTimeoutMs = 1000;
+
+/// 单次播放最多尝试的档位数，防止网络差时逐档耗尽时间
+const int maxPlaybackQualityCandidates = 4;
+
+/// LX 单档取流上限（含地址探针），超时即回退原生
+const int lxResolveAttemptTimeoutMs = 6000;
+
+/// LX 地址探针上限
+const int lxResolveProbeTimeoutMs = 2500;
+
+/// LX 延后启动原生的时间窗：优先等 LX，超时后原生立即接管
+const int lxNativeHedgeDelayMs = 1000;
+
 /// 音质档位：key 为插件契约值，label 为界面展示文案
 enum MusicQuality {
   q96('96k', '流畅 · 96K'),
@@ -33,8 +57,40 @@ enum MusicQuality {
 
 /// 音质键：从低到高
 const List<String> qualityKeysOrdered = [
-  '96k', '128k', '192k', '320k', 'flac', 'flac24bit',
-  'hires', 'vinyl', 'dolby', 'atmos', 'atmos_plus', 'master',
+  '96k',
+  '128k',
+  '192k',
+  '320k',
+  'flac',
+  'flac24bit',
+  'hires',
+  'vinyl',
+  'dolby',
+  'atmos',
+  'atmos_plus',
+  'master',
+];
+
+/// 通用音质档位：从低到高。
+/// 平台专属高规格（hires/atmos 等）不参与逐档降级，
+/// 失败时统一回落到 flac/320k 等通用档，避免在同层变体上反复等待。
+const List<String> playbackQualityTiers = [
+  '96k',
+  '128k',
+  '192k',
+  '320k',
+  'flac',
+];
+
+/// 平台专属高规格档位
+const List<String> premiumQualityKeys = [
+  'flac24bit',
+  'hires',
+  'vinyl',
+  'dolby',
+  'atmos',
+  'atmos_plus',
+  'master',
 ];
 
 int qualityRankOf(String key) => qualityKeysOrdered.indexOf(key);
@@ -55,17 +111,55 @@ List<String> qualityOrderDownFrom(String defaultKey) {
   return [defaultKey, ...qualityKeysOrdered.sublist(0, idx).reversed];
 }
 
-/// 播放实际尝试顺序：已知音质只走默认及更低；未知音质才全量探测
+/// 生成降级阶梯：请求档位优先，之后只走更低的通用档位。
+/// 高规格请求（master/hires 等）先回落到 flac，再走 320k/192k/128k/96k；
+/// available 非空时仅保留其中声明可用的档位。
+List<String> qualityFallbackLadder(
+  String requested, {
+  Iterable<String>? available,
+  int max = maxPlaybackQualityCandidates,
+}) {
+  if (max <= 0) return const [];
+  final allow = available?.toSet();
+  final out = <String>[];
+  void add(String key) {
+    if (out.length >= max || out.contains(key)) return;
+    if (allow != null && !allow.contains(key)) return;
+    out.add(key);
+  }
+
+  add(requested);
+  final tierIndex = playbackQualityTiers.indexOf(requested);
+  if (tierIndex >= 0) {
+    for (var i = tierIndex - 1; i >= 0 && out.length < max; i--) {
+      add(playbackQualityTiers[i]);
+    }
+    return out;
+  }
+  // 平台专属高规格：不再互相降级，直接进入通用档位
+  if (premiumQualityKeys.contains(requested)) {
+    for (final key in playbackQualityTiers.reversed) {
+      if (out.length >= max) break;
+      add(key);
+    }
+  }
+  return out;
+}
+
+/// 播放实际尝试顺序：优先请求档及其更低通用档；
+/// 请求档未声明时，从已声明的最高档开始向下降级。
 List<String> playbackQualityOrder(MediaItem item, String defaultKey) {
-  if (item.qualities.isEmpty) return qualityOrderLowerFirst(defaultKey);
-  final tried = qualityOrderDownFrom(defaultKey)
-      .where(item.qualities.containsKey)
-      .toList();
-  if (tried.isNotEmpty) return tried;
-  // 可用音质全高于默认时按从低到高兜底
-  final keys = item.qualities.keys.toList()
-    ..sort((a, b) => qualityRankOf(a).compareTo(qualityRankOf(b)));
-  return keys;
+  final available = item.qualities.keys.toSet();
+  final ladder = qualityFallbackLadder(
+    defaultKey,
+    available: available.isEmpty ? null : available,
+  );
+  if (ladder.isNotEmpty) return ladder;
+  if (available.isEmpty) return [defaultKey];
+  final start = available.reduce(
+    (a, b) => qualityRankOf(a) >= qualityRankOf(b) ? a : b,
+  );
+  return qualityFallbackLadder(start, available: available);
 }
 
 /// 当前播放项：已解析地址与实际播放音质，供播放栏/播放页显示
@@ -112,17 +206,16 @@ class NowPlaying {
     bool? loading,
     List<String>? backupUrls,
     String? via,
-  }) =>
-      NowPlaying(
-        item: item ?? this.item,
-        mediaUrl: mediaUrl ?? this.mediaUrl,
-        qualityKey: qualityKey ?? this.qualityKey,
-        size: size ?? this.size,
-        headers: headers ?? this.headers,
-        loading: loading ?? this.loading,
-        backupUrls: backupUrls ?? this.backupUrls,
-        via: via ?? this.via,
-      );
+  }) => NowPlaying(
+    item: item ?? this.item,
+    mediaUrl: mediaUrl ?? this.mediaUrl,
+    qualityKey: qualityKey ?? this.qualityKey,
+    size: size ?? this.size,
+    headers: headers ?? this.headers,
+    loading: loading ?? this.loading,
+    backupUrls: backupUrls ?? this.backupUrls,
+    via: via ?? this.via,
+  );
 }
 
 class MediaItem {
@@ -176,37 +269,36 @@ class MediaItem {
     Map<String, QualityInfo>? qualities,
     String? rawJson,
     List<String>? backupUrls,
-  }) =>
-      MediaItem(
-        id: id ?? this.id,
-        platform: platform ?? this.platform,
-        title: title ?? this.title,
-        artist: artist ?? this.artist,
-        album: album ?? this.album,
-        artwork: artwork ?? this.artwork,
-        durationMs: durationMs ?? this.durationMs,
-        mediaUrl: mediaUrl ?? this.mediaUrl,
-        mediaHeaders: mediaHeaders ?? this.mediaHeaders,
-        lyric: lyric ?? this.lyric,
-        qualities: qualities ?? this.qualities,
-        rawJson: rawJson ?? this.rawJson,
-        backupUrls: backupUrls ?? this.backupUrls,
-      );
+  }) => MediaItem(
+    id: id ?? this.id,
+    platform: platform ?? this.platform,
+    title: title ?? this.title,
+    artist: artist ?? this.artist,
+    album: album ?? this.album,
+    artwork: artwork ?? this.artwork,
+    durationMs: durationMs ?? this.durationMs,
+    mediaUrl: mediaUrl ?? this.mediaUrl,
+    mediaHeaders: mediaHeaders ?? this.mediaHeaders,
+    lyric: lyric ?? this.lyric,
+    qualities: qualities ?? this.qualities,
+    rawJson: rawJson ?? this.rawJson,
+    backupUrls: backupUrls ?? this.backupUrls,
+  );
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'platform': platform,
-        'title': title,
-        'artist': artist,
-        'album': album,
-        'artwork': artwork ?? '',
-        'durationMs': durationMs,
-        'mediaUrl': mediaUrl ?? '',
-        'mediaHeaders': mediaHeaders,
-        'qualities': {for (final e in qualities.entries) e.key: e.value.toJson()},
-        'rawJson': rawJson ?? '',
-        'backupUrls': backupUrls,
-      };
+    'id': id,
+    'platform': platform,
+    'title': title,
+    'artist': artist,
+    'album': album,
+    'artwork': artwork ?? '',
+    'durationMs': durationMs,
+    'mediaUrl': mediaUrl ?? '',
+    'mediaHeaders': mediaHeaders,
+    'qualities': {for (final e in qualities.entries) e.key: e.value.toJson()},
+    'rawJson': rawJson ?? '',
+    'backupUrls': backupUrls,
+  };
 
   static MediaItem fromJson(Map<String, dynamic> o) {
     final qualities = <String, QualityInfo>{};
@@ -215,7 +307,9 @@ class MediaItem {
       for (final entry in rawQualities.entries) {
         final q = entry.value;
         if (q is Map) {
-          qualities['${entry.key}'] = QualityInfo.fromJson(Map<String, dynamic>.from(q));
+          qualities['${entry.key}'] = QualityInfo.fromJson(
+            Map<String, dynamic>.from(q),
+          );
         }
       }
     }
@@ -253,16 +347,16 @@ class QualityInfo {
   final String? url;
 
   Map<String, dynamic> toJson() => {
-        if (size != null) 'size': size,
-        if (bitrate != null) 'bitrate': bitrate,
-        if (url != null) 'url': url,
-      };
+    if (size != null) 'size': size,
+    if (bitrate != null) 'bitrate': bitrate,
+    if (url != null) 'url': url,
+  };
 
   static QualityInfo fromJson(Map<String, dynamic> o) => QualityInfo(
-        size: (o['size'] as num?)?.toInt(),
-        bitrate: (o['bitrate'] as num?)?.toInt(),
-        url: (o['url'] as String?)?.takeIf((v) => v.isNotEmpty),
-      );
+    size: (o['size'] as num?)?.toInt(),
+    bitrate: (o['bitrate'] as num?)?.toInt(),
+    url: (o['url'] as String?)?.takeIf((v) => v.isNotEmpty),
+  );
 }
 
 class LyricSource {
@@ -352,7 +446,10 @@ abstract class MusicPlugin {
 
   /// 带实际命中音质的播放解析：部分插件会降级返回，
   /// 此时第二分量为插件上报的实际音质键；默认实现沿用请求音质
-  Future<(MediaItem, String)?> getMediaSourceDetailed(MediaItem item, String quality) async {
+  Future<(MediaItem, String)?> getMediaSourceDetailed(
+    MediaItem item,
+    String quality,
+  ) async {
     final r = await getMediaSource(item, quality);
     return r == null ? null : (r, quality);
   }
@@ -365,7 +462,10 @@ abstract class MusicPlugin {
   Future<List<TopListGroup>> topLists() async => const [];
 
   /// 榜单详情，多数插件忽略 page，isEnd 缺省为 true
-  Future<SearchPage<MediaItem>> topListDetail(TopListItem item, [int page = 1]) async => const SearchPage(data: []);
+  Future<SearchPage<MediaItem>> topListDetail(
+    TopListItem item, [
+    int page = 1,
+  ]) async => const SearchPage(data: []);
 
   /// 切歌时立即终止该插件未完成的网络请求
   void cancelPendingRequests();
