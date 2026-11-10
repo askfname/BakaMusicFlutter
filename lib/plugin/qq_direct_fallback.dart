@@ -283,7 +283,8 @@ Future<String?> qqDirectMediaUrl(
       'song_play_url_sq',
     ];
     final fields = _qqS01sFields[quality] ?? fallbackFields;
-    final api = 'https://tang.api.s01s.cn/music_open_api.php?mid=${_enc(songmid)}';
+    final api =
+        'https://tang.api.s01s.cn/music_open_api.php?mid=${_enc(songmid)}';
     final decoded = jsonDecode(await _httpGetText(api, _qqApiTimeoutMs));
     if (decoded is Map) {
       for (final field in fields) {

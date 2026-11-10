@@ -91,8 +91,13 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen>
     with SingleTickerProviderStateMixin {
   late final MainViewModel _vm;
-  late final Listenable _appState;
   late final AnimationController _dockController;
+
+  /// 四个 Tab 页缓存实例：根组件重绘时避免整页重建
+  late final Widget _homeTab;
+  late final Widget _libraryTab;
+  late final Widget _searchTab;
+  late final Widget _settingsTab;
 
   final GlobalKey<PlayerSheetState> _sheetKey = GlobalKey<PlayerSheetState>();
   final GlobalKey<SettingsScreenState> _settingsKey =
@@ -105,7 +110,6 @@ class _MainScreenState extends State<MainScreen>
 
   // 界面状态
   int _selectedTab = 0;
-  int _settingsScrollTrigger = 0;
   bool _expanded = false;
   bool _showQueue = false;
   bool _importNotice = false;
@@ -133,7 +137,32 @@ class _MainScreenState extends State<MainScreen>
       playbackController: widget.playbackController,
       sessionStore: widget.sessionStore,
     );
-    _appState = Listenable.merge([_vm, widget.repository]);
+    _homeTab = HomeScreen(
+      sourceService: widget.sourceService,
+      repository: widget.repository,
+      onPlayMedia: _vm.playMediaItem,
+      onInstallPlugin: _jumpToPluginSettings,
+    );
+    _libraryTab = LibraryScreen(
+      repository: widget.repository,
+      onOpenPlaylist: (name) {
+        setState(() => _playlistSheet = name);
+        _settleDock(show: true, durMs: 350);
+      },
+      onImportPlaylist: () => setState(() => _importNotice = true),
+    );
+    _searchTab = SearchScreen(
+      sourceService: widget.sourceService,
+      repository: widget.repository,
+      onPlayMedia: _vm.playMediaItem,
+      onInstallPlugin: _jumpToPluginSettings,
+      onShowDock: () => _settleDock(show: true, durMs: 350),
+    );
+    _settingsTab = SettingsScreen(
+      key: _settingsKey,
+      sourceService: widget.sourceService,
+      repository: widget.repository,
+    );
     _vm.toastHandler = _showToast;
     _lastNowKey = _vm.nowPlaying?.key;
     _dockController = AnimationController(
@@ -306,9 +335,9 @@ class _MainScreenState extends State<MainScreen>
   void _jumpToPluginSettings() {
     setState(() {
       _selectedTab = 3;
-      _settingsScrollTrigger++;
       _playlistSheet = null;
     });
+    _settingsKey.currentState?.openPluginPage();
   }
 
   bool get _settingsInPluginPage =>
@@ -471,30 +500,62 @@ class _MainScreenState extends State<MainScreen>
         if (!_handleBack()) unawaited(SystemNavigator.pop());
       },
       child: Scaffold(
-        body: ListenableBuilder(
-          listenable: _appState,
-          builder: (context, _) => Stack(
-            children: [
-              _buildContent(),
-              // 底座常驻（显隐只做位移+透明度）：悬浮于内容与歌单详情之上
-              if (!_dockGone) _buildDock(progressActive),
-              if (_expanded) _buildPlayerSheet(),
-              if (_lyricFullscreen)
-                Positioned.fill(
-                  child: _LyricFullscreenOverlay(
-                    key: _lyricKey,
-                    viewModel: _vm,
-                    onClosed: () {
-                      if (mounted) setState(() => _lyricFullscreen = false);
-                    },
-                  ),
+        body: Stack(
+          children: [
+            _buildContent(),
+            // 底座常驻（显隐只做位移+透明度）：悬浮于内容与歌单详情之上
+            if (!_dockGone) _buildDock(progressActive),
+            if (_expanded) _buildPlayerSheet(),
+            if (_lyricFullscreen)
+              Positioned.fill(
+                child: _LyricFullscreenOverlay(
+                  key: _lyricKey,
+                  viewModel: _vm,
+                  onClosed: () {
+                    if (mounted) setState(() => _lyricFullscreen = false);
+                  },
                 ),
-              if (_vm.playError != null)
+              ),
+            _buildVmDialogs(),
+            if (_importNotice)
+              _dialogOverlay(
+                onDismiss: () => setState(() => _importNotice = false),
+                dialog: AlertDialog(
+                  title: const Text('导入歌单'),
+                  content: const Text('歌单导入功能暂未开放，敬请期待'),
+                  actions: [
+                    TextButton(
+                      onPressed: () => setState(() => _importNotice = false),
+                      child: const Text('确定'),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 播放错误弹窗：只订阅播放状态，避免通知波及四个常驻页面
+  Widget _buildVmDialogs() {
+    return Positioned.fill(
+      child: ListenableBuilder(
+        listenable: _vm,
+        builder: (context, _) {
+          final playError = _vm.playError;
+          final playerError = _vm.playerError;
+          if (playError == null && playerError == null) {
+            return const SizedBox.shrink();
+          }
+          return Stack(
+            children: [
+              if (playError != null)
                 _dialogOverlay(
                   onDismiss: () => _vm.playError = null,
                   dialog: AlertDialog(
                     title: const Text('播放提示'),
-                    content: Text(_vm.playError!),
+                    content: Text(playError),
                     actions: [
                       TextButton(
                         onPressed: () => _vm.playError = null,
@@ -503,11 +564,11 @@ class _MainScreenState extends State<MainScreen>
                     ],
                   ),
                 ),
-              if (_vm.playerError != null)
+              if (playerError != null)
                 _dialogOverlay(
                   onDismiss: () => _vm.playerError = null,
                   dialog: _PlayerErrorDialog(
-                    message: _vm.playerError!,
+                    message: playerError,
                     retryVisible: _vm.playerErrorRetry,
                     onNext: () {
                       _vm.playerError = null;
@@ -517,23 +578,9 @@ class _MainScreenState extends State<MainScreen>
                     onRetry: _vm.retryLowerQuality,
                   ),
                 ),
-              if (_importNotice)
-                _dialogOverlay(
-                  onDismiss: () => setState(() => _importNotice = false),
-                  dialog: AlertDialog(
-                    title: const Text('导入歌单'),
-                    content: const Text('歌单导入功能暂未开放，敬请期待'),
-                    actions: [
-                      TextButton(
-                        onPressed: () => setState(() => _importNotice = false),
-                        child: const Text('确定'),
-                      ),
-                    ],
-                  ),
-                ),
             ],
-          ),
-        ),
+          );
+        },
       ),
     );
   }
@@ -550,36 +597,7 @@ class _MainScreenState extends State<MainScreen>
                 bottom: false,
                 child: IndexedStack(
                   index: _selectedTab,
-                  children: [
-                    HomeScreen(
-                      sourceService: widget.sourceService,
-                      repository: widget.repository,
-                      onPlayMedia: _vm.playMediaItem,
-                      onInstallPlugin: _jumpToPluginSettings,
-                    ),
-                    LibraryScreen(
-                      repository: widget.repository,
-                      onOpenPlaylist: (name) {
-                        setState(() => _playlistSheet = name);
-                        _settleDock(show: true, durMs: 350);
-                      },
-                      onImportPlaylist: () =>
-                          setState(() => _importNotice = true),
-                    ),
-                    SearchScreen(
-                      sourceService: widget.sourceService,
-                      repository: widget.repository,
-                      onPlayMedia: _vm.playMediaItem,
-                      onInstallPlugin: _jumpToPluginSettings,
-                      onShowDock: () => _settleDock(show: true, durMs: 350),
-                    ),
-                    SettingsScreen(
-                      key: _settingsKey,
-                      sourceService: widget.sourceService,
-                      repository: widget.repository,
-                      scrollTrigger: _settingsScrollTrigger,
-                    ),
-                  ],
+                  children: [_homeTab, _libraryTab, _searchTab, _settingsTab],
                 ),
               ),
             ),
@@ -648,24 +666,27 @@ class _MainScreenState extends State<MainScreen>
               child: Opacity(opacity: 1 - t, child: child),
             );
           },
-          child: BottomPlayerDock(
-            now: _vm.nowPlaying,
-            playing: _vm.playing,
-            buffering: _vm.buffering,
-            positionMs: progressActive ? _vm.positionMs : _frozenZero,
-            durationMs: progressActive ? _vm.durationMs : _frozenZero,
-            onPrev: _vm.stepPrev,
-            onToggle: _vm.togglePlay,
-            onNext: _vm.stepNext,
-            onOpenPlayer: () {
-              setState(() {
-                _showQueue = false;
-                _expanded = true;
-              });
-            },
-            onSeek: _vm.seekTo,
-            selectedTab: _selectedTab,
-            onSelectTab: _onSelectTab,
+          child: ListenableBuilder(
+            listenable: _vm,
+            builder: (context, _) => BottomPlayerDock(
+              now: _vm.nowPlaying,
+              playing: _vm.playing,
+              buffering: _vm.buffering,
+              positionMs: progressActive ? _vm.positionMs : _frozenZero,
+              durationMs: progressActive ? _vm.durationMs : _frozenZero,
+              onPrev: _vm.stepPrev,
+              onToggle: _vm.togglePlay,
+              onNext: _vm.stepNext,
+              onOpenPlayer: () {
+                setState(() {
+                  _showQueue = false;
+                  _expanded = true;
+                });
+              },
+              onSeek: _vm.seekTo,
+              selectedTab: _selectedTab,
+              onSelectTab: _onSelectTab,
+            ),
           ),
         ),
       ),
@@ -673,46 +694,52 @@ class _MainScreenState extends State<MainScreen>
   }
 
   Widget _buildPlayerSheet() {
-    final now = _vm.nowPlaying;
-    final favorites = widget.repository.favorites;
     return Positioned.fill(
-      child: PlayerSheet(
-        key: _sheetKey,
-        now: now,
-        playing: _vm.playing,
-        buffering: _vm.buffering,
-        queue: _vm.playQueue,
-        queueIndex: _vm.queueIndex,
-        positionMs: _vm.positionMs,
-        durationMs: _vm.durationMs,
-        lyricLines: _vm.lyricLines,
-        lyricLoading: _vm.lyricLoading,
-        onToggle: _vm.togglePlay,
-        onPrev: _vm.stepPrev,
-        onNext: _vm.stepNext,
-        onSeek: _vm.seekTo,
-        onPlayAt: _vm.playAt,
-        isFavorite: now != null && favorites.contains(now.key),
-        onToggleFavorite: () {
-          final current = _vm.nowPlaying;
-          if (current != null) {
-            unawaited(widget.repository.toggleFavorite(current.item));
-          }
+      child: ListenableBuilder(
+        listenable: Listenable.merge([_vm, widget.repository]),
+        builder: (context, _) {
+          final now = _vm.nowPlaying;
+          final favorites = widget.repository.favorites;
+          return PlayerSheet(
+            key: _sheetKey,
+            now: now,
+            playing: _vm.playing,
+            buffering: _vm.buffering,
+            queue: _vm.playQueue,
+            queueIndex: _vm.queueIndex,
+            positionMs: _vm.positionMs,
+            durationMs: _vm.durationMs,
+            lyricLines: _vm.lyricLines,
+            lyricLoading: _vm.lyricLoading,
+            onToggle: _vm.togglePlay,
+            onPrev: _vm.stepPrev,
+            onNext: _vm.stepNext,
+            onSeek: _vm.seekTo,
+            onPlayAt: _vm.playAt,
+            isFavorite: now != null && favorites.contains(now.key),
+            onToggleFavorite: () {
+              final current = _vm.nowPlaying;
+              if (current != null) {
+                unawaited(widget.repository.toggleFavorite(current.item));
+              }
+            },
+            onOpenAddPlaylist: () => unawaited(_openAddPlaylistDialog()),
+            onOpenDownload: () => unawaited(_openDownloadDialog()),
+            onOpenSwitchQuality: () => unawaited(_openSwitchQualityDialog()),
+            onClose: () {
+              setState(() {
+                _expanded = false;
+                _showQueue = false;
+              });
+            },
+            showQueue: _showQueue,
+            onToggleQueue: () => setState(() => _showQueue = !_showQueue),
+            playMode: _vm.playMode,
+            onModeChange: (mode) => _vm.playMode = mode,
+            onOpenLyricFullscreen: () =>
+                setState(() => _lyricFullscreen = true),
+          );
         },
-        onOpenAddPlaylist: () => unawaited(_openAddPlaylistDialog()),
-        onOpenDownload: () => unawaited(_openDownloadDialog()),
-        onOpenSwitchQuality: () => unawaited(_openSwitchQualityDialog()),
-        onClose: () {
-          setState(() {
-            _expanded = false;
-            _showQueue = false;
-          });
-        },
-        showQueue: _showQueue,
-        onToggleQueue: () => setState(() => _showQueue = !_showQueue),
-        playMode: _vm.playMode,
-        onModeChange: (mode) => _vm.playMode = mode,
-        onOpenLyricFullscreen: () => setState(() => _lyricFullscreen = true),
       ),
     );
   }
@@ -785,128 +812,140 @@ class _LyricFullscreenOverlayState extends State<_LyricFullscreenOverlay>
 
   @override
   Widget build(BuildContext context) {
-    final viewModel = widget.viewModel;
-    final now = viewModel.nowPlaying;
-    return CoverGradientBuilder(
-      artwork: now?.item.artwork,
-      builder: (context, start, end) {
-        final light =
-            (start.computeLuminance() + end.computeLuminance()) / 2 > 0.6;
-        final baseColor = light ? Colors.black : Colors.white;
-        return AnnotatedRegion<SystemUiOverlayStyle>(
-          value: SystemUiOverlayStyle(
-            statusBarIconBrightness: light ? Brightness.dark : Brightness.light,
-            systemNavigationBarIconBrightness: light
-                ? Brightness.dark
-                : Brightness.light,
-          ),
-          child: AnimatedBuilder(
-            animation: _controller,
-            builder: (context, child) {
-              final t = _controller.value;
-              // 进入：淡入 + 自底部上滑；退出：淡出 + 轻微缩小
-              final offsetY = _closing
-                  ? 0.0
-                  : (1 - t) * MediaQuery.sizeOf(context).height;
-              final scale = _closing ? 1 - 0.04 * (1 - t) : 1.0;
-              return Opacity(
-                opacity: t,
-                child: Transform.translate(
-                  offset: Offset(0, offsetY),
-                  child: Transform.scale(scale: scale, child: child),
-                ),
-              );
-            },
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [start, end],
-                ),
+    // 只订阅播放状态；动画与歌词刷新走各自的 ValueListenable
+    return ListenableBuilder(
+      listenable: widget.viewModel,
+      builder: (context, _) {
+        final viewModel = widget.viewModel;
+        final now = viewModel.nowPlaying;
+        return CoverGradientBuilder(
+          artwork: now?.item.artwork,
+          builder: (context, start, end) {
+            final light =
+                (start.computeLuminance() + end.computeLuminance()) / 2 > 0.6;
+            final baseColor = light ? Colors.black : Colors.white;
+            return AnnotatedRegion<SystemUiOverlayStyle>(
+              value: SystemUiOverlayStyle(
+                statusBarIconBrightness: light
+                    ? Brightness.dark
+                    : Brightness.light,
+                systemNavigationBarIconBrightness: light
+                    ? Brightness.dark
+                    : Brightness.light,
               ),
-              child: GestureDetector(
-                // 独立全屏层：拦截穿透点击
-                behavior: HitTestBehavior.opaque,
-                onTap: () {},
-                child: TweenAnimationBuilder<Color?>(
-                  tween: ColorTween(end: baseColor),
-                  duration: const Duration(milliseconds: 600),
-                  builder: (context, animated, _) {
-                    final content = animated ?? baseColor;
-                    final sub = content.withValues(alpha: 0.7);
-                    // 全屏未播放歌词更浅，与副标题 0.7 区分
-                    final inactive = content.withValues(alpha: 0.45);
-                    return Padding(
-                      padding: EdgeInsets.fromLTRB(24, 32, 24, _navBottom ?? 0),
-                      child: Column(
-                        children: [
-                          Row(
+              child: AnimatedBuilder(
+                animation: _controller,
+                builder: (context, child) {
+                  final t = _controller.value;
+                  // 进入：淡入 + 自底部上滑；退出：淡出 + 轻微缩小
+                  final offsetY = _closing
+                      ? 0.0
+                      : (1 - t) * MediaQuery.sizeOf(context).height;
+                  final scale = _closing ? 1 - 0.04 * (1 - t) : 1.0;
+                  return Opacity(
+                    opacity: t,
+                    child: Transform.translate(
+                      offset: Offset(0, offsetY),
+                      child: Transform.scale(scale: scale, child: child),
+                    ),
+                  );
+                },
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [start, end],
+                    ),
+                  ),
+                  child: GestureDetector(
+                    // 独立全屏层：拦截穿透点击
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () {},
+                    child: TweenAnimationBuilder<Color?>(
+                      tween: ColorTween(end: baseColor),
+                      duration: const Duration(milliseconds: 600),
+                      builder: (context, animated, _) {
+                        final content = animated ?? baseColor;
+                        final sub = content.withValues(alpha: 0.7);
+                        // 全屏未播放歌词更浅，与副标题 0.7 区分
+                        final inactive = content.withValues(alpha: 0.45);
+                        return Padding(
+                          padding: EdgeInsets.fromLTRB(
+                            24,
+                            32,
+                            24,
+                            _navBottom ?? 0,
+                          ),
+                          child: Column(
                             children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      '歌词',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 20,
-                                        color: content,
-                                      ),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          '歌词',
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 20,
+                                            color: content,
+                                          ),
+                                        ),
+                                        Text(
+                                          now == null
+                                              ? ''
+                                              : '${now.item.title} · '
+                                                    '${now.item.artist}',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: sub,
+                                          ),
+                                        ),
+                                      ],
                                     ),
-                                    Text(
-                                      now == null
-                                          ? ''
-                                          : '${now.item.title} · '
-                                                '${now.item.artist}',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        color: sub,
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                                  ),
+                                  IconButton(
+                                    onPressed: dismissAnimated,
+                                    tooltip: '退出全屏',
+                                    color: content,
+                                    icon: const Icon(Icons.fullscreen_exit),
+                                  ),
+                                ],
                               ),
-                              IconButton(
-                                onPressed: dismissAnimated,
-                                tooltip: '退出全屏',
-                                color: content,
-                                icon: const Icon(Icons.fullscreen_exit),
+                              const SizedBox(height: 8),
+                              Expanded(
+                                child: LyricsView(
+                                  lines: viewModel.lyricLines,
+                                  positionMs: viewModel.positionMs.value,
+                                  positionListenable: viewModel.positionMs,
+                                  loading:
+                                      viewModel.lyricLoading &&
+                                      viewModel.nowPlaying != null,
+                                  playing: viewModel.playing,
+                                  markerFraction: 0.24,
+                                  fontScale: 1.35,
+                                  centered: true,
+                                  activeColor: content,
+                                  inactiveColor: inactive,
+                                  onSeek: viewModel.seekTo,
+                                  lineGap: 10,
+                                ),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 8),
-                          Expanded(
-                            child: ValueListenableBuilder<int>(
-                              valueListenable: viewModel.positionMs,
-                              builder: (context, positionMs, _) => LyricsView(
-                                lines: viewModel.lyricLines,
-                                positionMs: positionMs,
-                                loading:
-                                    viewModel.lyricLoading &&
-                                    viewModel.nowPlaying != null,
-                                playing: viewModel.playing,
-                                markerFraction: 0.24,
-                                fontScale: 1.35,
-                                centered: true,
-                                activeColor: content,
-                                inactiveColor: inactive,
-                                onSeek: viewModel.seekTo,
-                                lineGap: 10,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
+                        );
+                      },
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ),
+            );
+          },
         );
       },
     );

@@ -105,8 +105,9 @@ class MusicSourceService {
 
   /// 加载全部启用插件；单个插件失败不影响其它插件
   Future<List<(InstalledPlugin, MusicPlugin)>> _loadEnabledPlugins() async {
+    final enabled = _manager.plugins();
     final entries = <(InstalledPlugin, MusicPlugin)>[];
-    for (final plugin in _manager.plugins()) {
+    for (final plugin in enabled) {
       String source;
       try {
         source = await _manager.readPluginSource(plugin);
@@ -127,6 +128,8 @@ class MusicSourceService {
       );
       if (adapter != null) entries.add((plugin, adapter));
     }
+    // 关停已禁用/移除插件的 worker，避免常驻内存
+    await _runtime.retainOnly({for (final plugin in enabled) plugin.id});
     return entries;
   }
 

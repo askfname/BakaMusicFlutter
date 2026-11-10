@@ -322,7 +322,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// 补封面：按“歌名 + 歌手”搜索同曲并回填 artwork/qualities，
-  /// 平台或榜单切换后任务立即失效（令牌校验）
+  /// 平台或榜单切换后任务立即失效（令牌校验）；
+  /// 限制尝试数量并批量回写，避免逐首触发整页刷新
+  static const int _maxCoverFillAttempts = 12;
+
   void _startCoverFill(
     List<MediaItem> snapshot,
     String platform,
@@ -330,12 +333,16 @@ class _HomeScreenState extends State<HomeScreen> {
   ) {
     final fillToken = ++_coverFillToken;
     unawaited(() async {
+      final updates = <String, MediaItem>{};
+      var attempts = 0;
       for (final song in snapshot) {
+        if (attempts >= _maxCoverFillAttempts) break;
         if (fillToken != _coverFillToken || detailToken != _detailToken) return;
         final artwork = song.artwork;
         if (artwork != null && artwork.isNotEmpty) continue;
         final query = '${song.title} ${song.artist}'.trim();
         if (query.isEmpty) continue;
+        attempts++;
         SearchPage<MediaItem>? page;
         try {
           page = await widget.sourceService.searchByPlatform(platform, query);
@@ -343,37 +350,49 @@ class _HomeScreenState extends State<HomeScreen> {
           continue;
         }
         if (fillToken != _coverFillToken || detailToken != _detailToken) return;
-        final candidates = page.data;
-        MediaItem? hit;
-        for (final candidate in candidates) {
+        MediaItem? found;
+        for (final candidate in page.data) {
           final art = candidate.artwork;
           if (candidate.id == song.id && art != null && art.isNotEmpty) {
-            hit = candidate;
+            found = candidate;
             break;
           }
         }
-        final found = hit;
         if (found == null) continue;
-        if (!mounted) return;
-        if (fillToken != _coverFillToken || detailToken != _detailToken) return;
-        setState(() {
-          _dailySongs = [
-            for (final current in _dailySongs)
-              if (current.platform == song.platform &&
-                  current.id == song.id &&
-                  (current.artwork == null || current.artwork!.isEmpty))
-                current.copyWith(
-                  artwork: found.artwork,
-                  qualities: found.qualities.isNotEmpty
-                      ? found.qualities
-                      : current.qualities,
-                )
-              else
-                current,
-          ];
-        });
+        updates[song.key] = found;
+        // 每 4 首回写一次，减少列表重建次数
+        if (updates.length >= 4) {
+          _applyCoverUpdates(updates, fillToken, detailToken);
+          updates.clear();
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 16));
       }
+      _applyCoverUpdates(updates, fillToken, detailToken);
     }());
+  }
+
+  void _applyCoverUpdates(
+    Map<String, MediaItem> updates,
+    int fillToken,
+    int detailToken,
+  ) {
+    if (updates.isEmpty || !mounted) return;
+    if (fillToken != _coverFillToken || detailToken != _detailToken) return;
+    setState(() {
+      _dailySongs = [
+        for (final current in _dailySongs)
+          if (updates.containsKey(current.key) &&
+              (current.artwork == null || current.artwork!.isEmpty))
+            current.copyWith(
+              artwork: updates[current.key]!.artwork,
+              qualities: updates[current.key]!.qualities.isNotEmpty
+                  ? updates[current.key]!.qualities
+                  : current.qualities,
+            )
+          else
+            current,
+      ];
+    });
   }
 
   void _selectPlatform(String name) {
@@ -418,107 +437,130 @@ class _HomeScreenState extends State<HomeScreen> {
       listenable: widget.repository,
       builder: (context, _) {
         final favorites = widget.repository.favorites;
-        return ListView(
-          // 悬浮底座预留，避免末尾内容被遮挡
-          padding: const EdgeInsets.only(bottom: 190),
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(left: 22, right: 22, top: 18),
-              child: Text(
-                _greeting,
-                style: const TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
+        return CustomScrollView(
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.only(left: 22, right: 22, top: 18),
+                child: Text(
+                  _greeting,
+                  style: const TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 6),
-              child: Text(
-                '发现属于你的音乐',
-                style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 22,
+                  vertical: 6,
+                ),
+                child: Text(
+                  '发现属于你的音乐',
+                  style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+                ),
               ),
             ),
             if (!hasNoPlugin)
-              SizedBox(
-                height: 40,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 18,
-                    vertical: 4,
+              SliverToBoxAdapter(
+                child: SizedBox(
+                  height: 40,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 18,
+                      vertical: 4,
+                    ),
+                    itemCount: _sources.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 8),
+                    itemBuilder: (context, index) {
+                      final source = _sources[index];
+                      return FilterChip(
+                        selected: source.name == _dailyPlatform,
+                        onSelected: (_) => _selectPlatform(source.name),
+                        showCheckmark: false,
+                        label: Text(
+                          source.name,
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(24),
+                        ),
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      );
+                    },
                   ),
-                  itemCount: _sources.length,
-                  separatorBuilder: (_, _) => const SizedBox(width: 8),
-                  itemBuilder: (context, index) {
-                    final source = _sources[index];
-                    return FilterChip(
-                      selected: source.name == _dailyPlatform,
-                      onSelected: (_) => _selectPlatform(source.name),
-                      showCheckmark: false,
-                      label: Text(
-                        source.name,
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(24),
-                      ),
-                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    );
-                  },
                 ),
               ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 8),
-              child: Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      '每日推荐',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                  if (!hasNoPlugin)
-                    _DailyBoardDropdown(
-                      boards: [
-                        for (final group in _dailyGroups) ...group.items,
-                      ],
-                      selected: _dailyBoard,
-                      enabled: !_dailyLoading,
-                      onSelect: _selectDailyBoard,
-                    ),
-                ],
-              ),
-            ),
-            if (!hasNoPlugin && _dailyError != null)
-              Padding(
+            SliverToBoxAdapter(
+              child: Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 22,
                   vertical: 8,
                 ),
-                child: Text(
-                  _dailyError!,
-                  style: TextStyle(color: theme.colorScheme.error),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        '每日推荐',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    if (!hasNoPlugin)
+                      _DailyBoardDropdown(
+                        boards: [
+                          for (final group in _dailyGroups) ...group.items,
+                        ],
+                        selected: _dailyBoard,
+                        enabled: !_dailyLoading,
+                        onSelect: _selectDailyBoard,
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            if (!hasNoPlugin && _dailyError != null)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 22,
+                    vertical: 8,
+                  ),
+                  child: Text(
+                    _dailyError!,
+                    style: TextStyle(color: theme.colorScheme.error),
+                  ),
                 ),
               ),
             if (hasNoPlugin)
-              NoPluginPrompt(onInstallClick: widget.onInstallPlugin)
+              SliverToBoxAdapter(
+                child: NoPluginPrompt(onInstallClick: widget.onInstallPlugin),
+              )
             else if (_dailyLoading)
-              for (var i = 0; i < 8; i++) const SongRowSkeleton()
+              const SliverToBoxAdapter(child: SongRowSkeletonList())
             else
-              for (final item in _dailySongs)
-                PluginSongRow(
-                  item: item,
-                  favorite: favorites.contains(item.key),
-                  onPlay: () => widget.onPlayMedia(item, _dailySongs),
-                  onToggleFavorite: () =>
-                      unawaited(widget.repository.toggleFavorite(item)),
-                  onDownload: () => _openDownloadQuality(item),
-                  onAddPlaylist: () => _openAddPlaylist(item),
-                ),
+              SliverList.builder(
+                itemCount: _dailySongs.length,
+                itemBuilder: (context, index) {
+                  final item = _dailySongs[index];
+                  return PluginSongRow(
+                    item: item,
+                    favorite: favorites.contains(item.key),
+                    onPlay: () => widget.onPlayMedia(item, _dailySongs),
+                    onToggleFavorite: () =>
+                        unawaited(widget.repository.toggleFavorite(item)),
+                    onDownload: () => _openDownloadQuality(item),
+                    onAddPlaylist: () => _openAddPlaylist(item),
+                  );
+                },
+              ),
+            // 悬浮底座预留，避免末尾内容被遮挡
+            const SliverToBoxAdapter(child: SizedBox(height: 190)),
           ],
         );
       },
@@ -772,6 +814,7 @@ class _LibraryPlaylistRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final art = artwork;
+    final thumbPx = (48 * MediaQuery.devicePixelRatioOf(context)).round();
     final placeholder = ColoredBox(
       color: iconBg,
       child: Center(
@@ -800,6 +843,9 @@ class _LibraryPlaylistRow extends StatelessWidget {
                       : CachedNetworkImage(
                           imageUrl: art,
                           httpHeaders: kArtworkHeaders,
+                          memCacheWidth: thumbPx,
+                          memCacheHeight: thumbPx,
+                          fadeInDuration: Duration.zero,
                           fit: BoxFit.cover,
                           errorWidget: (_, _, _) => placeholder,
                         ),
@@ -894,6 +940,7 @@ class PluginSongRow extends StatelessWidget {
     final quality = _bestQualityKey(item);
     final size = quality == null ? null : item.qualities[quality]?.size;
     final art = item.artwork;
+    final thumbPx = (48 * MediaQuery.devicePixelRatioOf(context)).round();
     final subtitle =
         '${item.artist} · ${formatDuration(item.durationMs)} · ${quality ?? '未知音质'}'
         '${size != null ? ' · ${formatSize(size)}' : ''} · ${item.platform}';
@@ -915,6 +962,9 @@ class PluginSongRow extends StatelessWidget {
                   : CachedNetworkImage(
                       imageUrl: art,
                       httpHeaders: kArtworkHeaders,
+                      memCacheWidth: thumbPx,
+                      memCacheHeight: thumbPx,
+                      fadeInDuration: Duration.zero,
                       fit: BoxFit.cover,
                       errorWidget: (_, _, _) => const SizedBox.shrink(),
                     ),
@@ -965,15 +1015,71 @@ String? _bestQualityKey(MediaItem item) {
   return best;
 }
 
-/// 歌曲行骨架屏：呼吸闪烁占位
-class SongRowSkeleton extends StatefulWidget {
-  const SongRowSkeleton({super.key});
+/// 歌曲行骨架屏：占位块颜色由 [SongRowSkeletonList] 统一驱动
+class SongRowSkeleton extends StatelessWidget {
+  const SongRowSkeleton({super.key, required this.color});
+
+  final Color color;
 
   @override
-  State<SongRowSkeleton> createState() => _SongRowSkeletonState();
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 72),
+        child: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: SizedBox(
+                width: 56,
+                height: 56,
+                child: ColoredBox(color: color),
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _bar(height: 16, widthFactor: 0.55),
+                  const SizedBox(height: 8),
+                  _bar(height: 12, widthFactor: 0.85),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _bar({required double height, required double widthFactor}) =>
+      FractionallySizedBox(
+        alignment: Alignment.centerLeft,
+        widthFactor: widthFactor,
+        child: Container(
+          height: height,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(4),
+          ),
+        ),
+      );
 }
 
-class _SongRowSkeletonState extends State<SongRowSkeleton>
+/// 骨架屏列表：整组共用一个动画控制器，避免每行各跑一个 ticker
+class SongRowSkeletonList extends StatefulWidget {
+  const SongRowSkeletonList({super.key, this.count = 8});
+
+  final int count;
+
+  @override
+  State<SongRowSkeletonList> createState() => _SongRowSkeletonListState();
+}
+
+class _SongRowSkeletonListState extends State<SongRowSkeletonList>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller = AnimationController(
     vsync: this,
@@ -992,58 +1098,16 @@ class _SongRowSkeletonState extends State<SongRowSkeleton>
     return AnimatedBuilder(
       animation: _controller,
       builder: (context, _) {
-        final placeholder = base.withValues(
-          alpha: 0.35 + 0.65 * _controller.value,
-        );
-        return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: 72),
-            child: Row(
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(14),
-                  child: SizedBox(
-                    width: 56,
-                    height: 56,
-                    child: ColoredBox(color: placeholder),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _bar(placeholder, height: 16, widthFactor: 0.55),
-                      const SizedBox(height: 8),
-                      _bar(placeholder, height: 12, widthFactor: 0.85),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
+        final color = base.withValues(alpha: 0.35 + 0.65 * _controller.value);
+        return Column(
+          children: [
+            for (var i = 0; i < widget.count; i++)
+              SongRowSkeleton(color: color),
+          ],
         );
       },
     );
   }
-
-  Widget _bar(
-    Color color, {
-    required double height,
-    required double widthFactor,
-  }) => FractionallySizedBox(
-    alignment: Alignment.centerLeft,
-    widthFactor: widthFactor,
-    child: Container(
-      height: height,
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(4),
-      ),
-    ),
-  );
 }
 
 /// 无插件引导：安装音源插件

@@ -9,6 +9,8 @@ library;
 import 'dart:convert';
 import 'dart:developer' as developer;
 
+import 'package:crypto/crypto.dart';
+
 import '../models/media_models.dart';
 import 'js_worker.dart';
 import 'plugin_http_client.dart';
@@ -16,18 +18,19 @@ import 'qq_direct_fallback.dart';
 
 /// 单次播放解析超时 30s：多供应商插件需留足预算
 const int _mediaSourceTimeoutMs = 30000;
-const Duration _mediaSourceTimeout =
-    Duration(milliseconds: _mediaSourceTimeoutMs);
+const Duration _mediaSourceTimeout = Duration(
+  milliseconds: _mediaSourceTimeoutMs,
+);
 
 /// 详情补全超时：最佳努力，超时返回 null 并直接走播放解析
 const int _musicInfoTimeoutMs = 10000;
-const Duration _musicInfoTimeout =
-    Duration(milliseconds: _musicInfoTimeoutMs);
+const Duration _musicInfoTimeout = Duration(milliseconds: _musicInfoTimeoutMs);
 
 /// 榜单详情可能涉及多次串行请求，超时放宽到 60s
 const int _topListDetailTimeoutMs = 60000;
-const Duration _topListDetailTimeout =
-    Duration(milliseconds: _topListDetailTimeoutMs);
+const Duration _topListDetailTimeout = Duration(
+  milliseconds: _topListDetailTimeoutMs,
+);
 
 const Duration _defaultInvokeTimeout = Duration(seconds: 30);
 
@@ -112,11 +115,13 @@ double? _optDouble(Object? value) {
 String? _httpUrl(String value) =>
     value.toLowerCase().startsWith('http') ? value : null;
 
-final RegExp _scientificNumberRegExp =
-    RegExp(r'^[0-9]+(\.[0-9]+)?[eE][+-]?[0-9]+$');
+final RegExp _scientificNumberRegExp = RegExp(
+  r'^[0-9]+(\.[0-9]+)?[eE][+-]?[0-9]+$',
+);
 final RegExp _trailingZeroDecimalRegExp = RegExp(r'^[0-9]+\.0+$');
-final RegExp _scientificSplitRegExp =
-    RegExp(r'^([+-]?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$');
+final RegExp _scientificSplitRegExp = RegExp(
+  r'^([+-]?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$',
+);
 final RegExp _trailingZerosRegExp = RegExp(r'0+$');
 final RegExp _trailingDotRegExp = RegExp(r'\.$');
 
@@ -136,8 +141,7 @@ String _plainDecimal(String text) {
   } else if (pointIndex >= digits.length) {
     body = '$digits${'0' * (pointIndex - digits.length)}';
   } else {
-    body =
-        '${digits.substring(0, pointIndex)}.${digits.substring(pointIndex)}';
+    body = '${digits.substring(0, pointIndex)}.${digits.substring(pointIndex)}';
   }
   return '$sign$body';
 }
@@ -333,10 +337,18 @@ MediaItem toMedia(Map<String, dynamic> obj, String platformName) {
       normalizePluginId(obj['songid']),
     ]),
     platform: _fallbackBlank(_optString(obj['platform']), platformName),
-    title: _fallbackBlank(_optString(obj['title']), _optString(obj['songname'])),
-    artist:
-        _fallbackBlank(_optString(obj['artist']), _optString(obj['singer'])),
-    album: _fallbackBlank(_optString(obj['album']), _optString(obj['albumname'])),
+    title: _fallbackBlank(
+      _optString(obj['title']),
+      _optString(obj['songname']),
+    ),
+    artist: _fallbackBlank(
+      _optString(obj['artist']),
+      _optString(obj['singer']),
+    ),
+    album: _fallbackBlank(
+      _optString(obj['album']),
+      _optString(obj['albumname']),
+    ),
     artwork: artwork.isEmpty ? null : artwork,
     durationMs: duration > 10000 ? duration.toInt() : (duration * 1000).toInt(),
     mediaUrl: _httpUrl(_optString(obj['url'])),
@@ -386,7 +398,9 @@ String? lyricString(Map<String, dynamic> value, String key) {
         final cmp = va.compareTo(vb);
         return cmp != 0 ? cmp : a.compareTo(b);
       });
-      final joined = indexed.map((index) => _optString(raw[keys[index]])).join();
+      final joined = indexed
+          .map((index) => _optString(raw[keys[index]]))
+          .join();
       return _isBlank(joined) ? null : joined;
     }
     // 其余对象不是歌词，不序列化为 JSON 文本，直接丢弃
@@ -427,8 +441,7 @@ class QuickJsMusicPlugin implements MusicPlugin {
   Set<String> get supportedQualities => _qualities;
 
   void _applyLoadResult(PluginLoadResult result) {
-    _platformName =
-        result.platform.trim().isEmpty ? name : result.platform;
+    _platformName = result.platform.trim().isEmpty ? name : result.platform;
     _qualities = result.qualities.toSet();
   }
 
@@ -515,7 +528,10 @@ class QuickJsMusicPlugin implements MusicPlugin {
       final list = <TopListItem>[];
       for (final itemEntry in items) {
         if (itemEntry is! Map) continue;
-        final item = _toTopList(Map<String, dynamic>.from(itemEntry), groupTitle);
+        final item = _toTopList(
+          Map<String, dynamic>.from(itemEntry),
+          groupTitle,
+        );
         if (item != null) list.add(item);
       }
       out.add(TopListGroup(title: groupTitle, items: list));
@@ -569,11 +585,10 @@ class QuickJsMusicPlugin implements MusicPlugin {
     TopListItem item, [
     int page = 1,
   ]) async {
-    final value = await _invoke(
-      'getTopListDetail',
-      [topListJson(item, _platformName), page],
-      timeout: _topListDetailTimeout,
-    );
+    final value = await _invoke('getTopListDetail', [
+      topListJson(item, _platformName),
+      page,
+    ], timeout: _topListDetailTimeout);
     List<dynamic>? musicArray;
     final rawMusicList = value['musicList'];
     if (rawMusicList is List) musicArray = rawMusicList;
@@ -612,11 +627,9 @@ class QuickJsMusicPlugin implements MusicPlugin {
   Future<MediaItem?> getMusicInfo(MediaItem item) async {
     Map<String, dynamic> value;
     try {
-      value = await _invoke(
-        'getMusicInfo',
-        [itemJson(item)],
-        timeout: _musicInfoTimeout,
-      );
+      value = await _invoke('getMusicInfo', [
+        itemJson(item),
+      ], timeout: _musicInfoTimeout);
     } on PluginCanceledException {
       rethrow;
     } catch (_) {
@@ -639,9 +652,12 @@ class QuickJsMusicPlugin implements MusicPlugin {
     putPluginId(mergedRaw, _fallbackBlank(normalizePluginId(item.id), item.id));
     return item.copyWith(
       artwork: enriched.artwork ?? item.artwork,
-      durationMs: enriched.durationMs > 0 ? enriched.durationMs : item.durationMs,
-      qualities:
-          enriched.qualities.isNotEmpty ? enriched.qualities : item.qualities,
+      durationMs: enriched.durationMs > 0
+          ? enriched.durationMs
+          : item.durationMs,
+      qualities: enriched.qualities.isNotEmpty
+          ? enriched.qualities
+          : item.qualities,
       backupUrls: enriched.backupUrls.isNotEmpty
           ? enriched.backupUrls
           : item.backupUrls,
@@ -666,23 +682,23 @@ class QuickJsMusicPlugin implements MusicPlugin {
     _mediaInFlight = true;
     try {
       try {
-        var result = await _invoke(
-          'getMediaSource',
-          [payload, quality],
-          timeout: _mediaSourceTimeout,
-        );
+        var result = await _invoke('getMediaSource', [
+          payload,
+          quality,
+        ], timeout: _mediaSourceTimeout);
         // 旧插件仅认识 low/standard/high/super：新音质键无结果时回退一次
         if (_isBlank(_optString(result['url']))) {
           final legacy = legacyQualityOf(quality);
           if (legacy != null && legacy != quality) {
             try {
-              result = await _invoke(
-                'getMediaSource',
-                [payload, legacy],
-                timeout: _mediaSourceTimeout,
-              );
+              result = await _invoke('getMediaSource', [
+                payload,
+                legacy,
+              ], timeout: _mediaSourceTimeout);
             } on PluginWorkerTimeoutException {
-              throw MediaResolveTimeoutException(_timeoutMessage(item, quality));
+              throw MediaResolveTimeoutException(
+                _timeoutMessage(item, quality),
+              );
             } on PluginCanceledException {
               rethrow;
             } on StalePluginException {
@@ -690,10 +706,7 @@ class QuickJsMusicPlugin implements MusicPlugin {
             } catch (error) {
               // 非 QQ 保持原行为：上抛由路由延时重试；QQ 则保留旧值走原生兜底
               if (!isQqPlatform(_platformName)) rethrow;
-              _log(
-                '$_platformName.getMediaSource 旧音质回退失败: $error',
-                warn: true,
-              );
+              _log('$_platformName.getMediaSource 旧音质回退失败: $error', warn: true);
             }
           }
         }
@@ -755,7 +768,9 @@ class QuickJsMusicPlugin implements MusicPlugin {
     }
     // 插件可能降级返回（如 bilibili 请求 flac 实际命中 320k）：以上报为准
     final reportedQuality = _optString(result['quality']).trim();
-    final actualQuality = reportedQuality.isNotEmpty ? reportedQuality : quality;
+    final actualQuality = reportedQuality.isNotEmpty
+        ? reportedQuality
+        : quality;
     // 本次解析返回的备用 CDN 随条目透出，播放失败时自动切换
     final backups = parseBackupUrls(result);
     return (
@@ -804,7 +819,8 @@ class QuickJsMusicPlugin implements MusicPlugin {
     if (finalRaw == null || _isBlank(finalRaw)) {
       finalRaw = translation ?? romanization;
     }
-    final hasAny = (finalRaw != null && !_isBlank(finalRaw)) ||
+    final hasAny =
+        (finalRaw != null && !_isBlank(finalRaw)) ||
         (translation != null && !_isBlank(translation)) ||
         (romanization != null && !_isBlank(romanization));
     if (!hasAny) return null;
@@ -819,7 +835,9 @@ class QuickJsMusicPlugin implements MusicPlugin {
   /// lrc 为 URL 时同步请求一次纯文本歌词（5s 超时，2MiB 上限）
   Future<String?> _fetchOwnerText(String url) async {
     try {
-      final client = _ownerHttp ??= PluginHttpClient(platformName: _platformName);
+      final client = _ownerHttp ??= PluginHttpClient(
+        platformName: _platformName,
+      );
       return await client.fetchText(url);
     } catch (_) {
       return null;
@@ -924,11 +942,19 @@ Map<String, dynamic>? _rawJsonObjectOrNull(String? rawJson) {
 class MusicPluginRuntime {
   final Map<String, QuickJsMusicPlugin> _active = {};
 
+  /// 各插件当前 worker 对应的源码指纹，用于跳过未变更插件的重建
+  final Map<String, String> _sourceSignatures = {};
+
   /// 当前已加载插件（只读视图）
   List<QuickJsMusicPlugin> get activePlugins =>
       List.unmodifiable(_active.values);
 
-  /// 加载插件源码；失败返回 null 并记录日志
+  static String _signatureOf(String source, String name, String? version) =>
+      sha256
+          .convert(utf8.encode('$name\u0000${version ?? ''}\u0000$source'))
+          .toString();
+
+  /// 加载插件源码；源码未变更时复用现有 worker，失败返回 null 并记录日志
   Future<QuickJsMusicPlugin?> loadPlugin({
     required String id,
     required String name,
@@ -936,8 +962,14 @@ class MusicPluginRuntime {
     required String source,
     Duration timeout = const Duration(seconds: 30),
   }) async {
-    final existing = _active.remove(id);
+    final signature = _signatureOf(source, name, version);
+    final existing = _active[id];
+    if (existing != null && _sourceSignatures[id] == signature) {
+      return existing;
+    }
     if (existing != null) {
+      _active.remove(id);
+      _sourceSignatures.remove(id);
       await existing.close();
     }
     PluginWorker worker;
@@ -963,6 +995,7 @@ class MusicPluginRuntime {
       final result = await worker.load(name, source, timeout: timeout);
       instance._applyLoadResult(result);
       _active[id] = instance;
+      _sourceSignatures[id] = signature;
       return instance;
     } catch (error) {
       await worker.close();
@@ -973,6 +1006,22 @@ class MusicPluginRuntime {
         error: error,
       );
       return null;
+    }
+  }
+
+  /// 关闭不再启用的插件 worker，回收其内存
+  Future<void> retainOnly(Set<String> ids) async {
+    final removed = [
+      for (final id in _active.keys.toList())
+        if (!ids.contains(id)) id,
+    ];
+    for (final id in removed) {
+      final instance = _active.remove(id);
+      _sourceSignatures.remove(id);
+      if (instance == null) continue;
+      try {
+        await instance.close();
+      } catch (_) {}
     }
   }
 
@@ -990,6 +1039,7 @@ class MusicPluginRuntime {
   Future<void> destroy() async {
     final instances = _active.values.toList();
     _active.clear();
+    _sourceSignatures.clear();
     for (final instance in instances) {
       try {
         await instance.close();

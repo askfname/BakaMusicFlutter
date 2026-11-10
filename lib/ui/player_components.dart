@@ -533,6 +533,7 @@ class _BottomPlayerDockState extends State<BottomPlayerDock> {
 
   Widget _thumb(NowPlaying? now, bool showLoading) {
     final art = now?.item.artwork;
+    final thumbPx = (44 * MediaQuery.devicePixelRatioOf(context)).round();
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: SizedBox(
@@ -549,6 +550,9 @@ class _BottomPlayerDockState extends State<BottomPlayerDock> {
                 CachedNetworkImage(
                   imageUrl: art,
                   httpHeaders: kArtworkHeaders,
+                  memCacheWidth: thumbPx,
+                  memCacheHeight: thumbPx,
+                  fadeInDuration: Duration.zero,
                   fit: BoxFit.cover,
                   errorWidget: (_, _, _) => const SizedBox.shrink(),
                 ),
@@ -933,6 +937,7 @@ class PlayerSheetState extends State<PlayerSheet>
   Widget _buildQueue(Color content) {
     final subContent = content.withValues(alpha: 0.7);
     final scheme = Theme.of(context).colorScheme;
+    final thumbPx = (44 * MediaQuery.devicePixelRatioOf(context)).round();
     return Column(
       children: [
         Padding(
@@ -1002,6 +1007,9 @@ class PlayerSheetState extends State<PlayerSheet>
                               : CachedNetworkImage(
                                   imageUrl: item.artwork!,
                                   httpHeaders: kArtworkHeaders,
+                                  memCacheWidth: thumbPx,
+                                  memCacheHeight: thumbPx,
+                                  fadeInDuration: Duration.zero,
                                   fit: BoxFit.cover,
                                   errorWidget: (_, _, _) =>
                                       const SizedBox.shrink(),
@@ -1052,6 +1060,9 @@ class PlayerSheetState extends State<PlayerSheet>
           320.0,
           math.max(96.0, constraints.maxHeight - 371),
         );
+        final coverPx = (coverSize * MediaQuery.devicePixelRatioOf(context))
+            .round()
+            .clamp(96, 1024);
         return Column(
           children: [
             const SizedBox(height: 12),
@@ -1069,6 +1080,9 @@ class PlayerSheetState extends State<PlayerSheet>
                           ? CachedNetworkImage(
                               imageUrl: art,
                               httpHeaders: kArtworkHeaders,
+                              memCacheWidth: coverPx,
+                              memCacheHeight: coverPx,
+                              fadeInDuration: const Duration(milliseconds: 120),
                               fit: BoxFit.cover,
                               errorWidget: (_, _, _) => const Center(
                                 child: Icon(
@@ -1180,19 +1194,17 @@ class PlayerSheetState extends State<PlayerSheet>
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: ValueListenableBuilder<int>(
-                  valueListenable: widget.positionMs,
-                  builder: (context, pos, _) => LyricsView(
-                    lines: widget.lyricLines,
-                    positionMs: pos,
-                    loading: widget.lyricLoading && now != null,
-                    playing: widget.playing,
-                    centered: true,
-                    activeColor: content,
-                    inactiveColor: lyricInactive,
-                    onSeek: widget.onSeek,
-                    showLoadingSpinner: false,
-                  ),
+                child: LyricsView(
+                  lines: widget.lyricLines,
+                  positionMs: widget.positionMs.value,
+                  positionListenable: widget.positionMs,
+                  loading: widget.lyricLoading && now != null,
+                  playing: widget.playing,
+                  centered: true,
+                  activeColor: content,
+                  inactiveColor: lyricInactive,
+                  onSeek: widget.onSeek,
+                  showLoadingSpinner: false,
                 ),
               ),
             ),
@@ -1564,6 +1576,7 @@ class LyricsView extends StatefulWidget {
     super.key,
     required this.lines,
     required this.positionMs,
+    this.positionListenable,
     this.loading = false,
     this.playing = true,
     this.markerFraction = 0.24,
@@ -1578,6 +1591,9 @@ class LyricsView extends StatefulWidget {
 
   final List<LyricLine> lines;
   final int positionMs;
+
+  /// 高频进度源：内部只刷新当前行，避免父层整页重建
+  final ValueListenable<int>? positionListenable;
   final bool loading;
   final bool playing;
   final double markerFraction;
@@ -1598,6 +1614,9 @@ class _LyricsViewState extends State<LyricsView> with WidgetsBindingObserver {
   final Stopwatch _clock = Stopwatch()..start();
   final Map<int, GlobalKey> _itemKeys = {};
 
+  /// 当前行逐字刷新用：仅卡拉 OK 行订阅
+  final ValueNotifier<int> _posNotifier = ValueNotifier<int>(0);
+
   Timer? _ticker;
   Timer? _resumeFollowTimer;
 
@@ -1617,6 +1636,8 @@ class _LyricsViewState extends State<LyricsView> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     final lifecycle = WidgetsBinding.instance.lifecycleState;
     _uiActive = lifecycle == null || lifecycle == AppLifecycleState.resumed;
+    _posNotifier.value = _displayPosMs;
+    widget.positionListenable?.addListener(_onExternalPosition);
     _resetForLines();
     _restartTicker();
   }
@@ -1624,17 +1645,36 @@ class _LyricsViewState extends State<LyricsView> with WidgetsBindingObserver {
   @override
   void didUpdateWidget(covariant LyricsView old) {
     super.didUpdateWidget(old);
+    if (old.positionListenable != widget.positionListenable) {
+      old.positionListenable?.removeListener(_onExternalPosition);
+      widget.positionListenable?.addListener(_onExternalPosition);
+    }
     if (!identical(old.lines, widget.lines)) {
       _resetForLines();
       _restartTicker();
       return;
     }
-    if (old.positionMs != widget.positionMs) {
+    if (old.positionMs != widget.positionMs &&
+        widget.positionListenable == null) {
       _basePosMs = widget.positionMs;
       _baseUptimeMs = _clock.elapsedMilliseconds;
       if (!widget.playing) _displayPosMs = widget.positionMs;
     }
     if (old.playing != widget.playing) _restartTicker();
+  }
+
+  /// 外部进度（250ms/1s 轮询）：只校准基准，不触发整页重建
+  void _onExternalPosition() {
+    final listenable = widget.positionListenable;
+    if (listenable == null || !mounted) return;
+    final pos = listenable.value;
+    _basePosMs = pos;
+    _baseUptimeMs = _clock.elapsedMilliseconds;
+    if (widget.playing || _displayPosMs == pos) return;
+    // 暂停时拖动进度：直接刷新当前歌词行
+    _displayPosMs = pos;
+    _posNotifier.value = pos;
+    setState(() {});
   }
 
   @override
@@ -1653,8 +1693,10 @@ class _LyricsViewState extends State<LyricsView> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    widget.positionListenable?.removeListener(_onExternalPosition);
     _ticker?.cancel();
     _resumeFollowTimer?.cancel();
+    _posNotifier.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -1668,6 +1710,7 @@ class _LyricsViewState extends State<LyricsView> with WidgetsBindingObserver {
     _basePosMs = widget.positionMs;
     _baseUptimeMs = _clock.elapsedMilliseconds;
     _displayPosMs = widget.positionMs;
+    _posNotifier.value = _displayPosMs;
     _follow = true;
     _lastSeenIndex = null;
     _lastAnchorIndex = _currentIndexFor(_displayPosMs);
@@ -1691,10 +1734,13 @@ class _LyricsViewState extends State<LyricsView> with WidgetsBindingObserver {
     final stepMs = _hasKaraoke ? 60 : 80;
     _ticker = Timer.periodic(Duration(milliseconds: stepMs), (_) {
       if (!mounted) return;
-      setState(() {
-        _displayPosMs =
-            _basePosMs + (_clock.elapsedMilliseconds - _baseUptimeMs);
-      });
+      final next = _basePosMs + (_clock.elapsedMilliseconds - _baseUptimeMs);
+      if (next == _displayPosMs) return;
+      _displayPosMs = next;
+      // 高频只更新当前行逐字进度；行切换才 setState 换高亮
+      _posNotifier.value = next;
+      final index = _currentIndexFor(next);
+      if (_lastSeenIndex != null && index != _lastSeenIndex) setState(() {});
     });
   }
 
@@ -1883,34 +1929,39 @@ class _LyricsViewState extends State<LyricsView> with WidgetsBindingObserver {
     final onSeek = widget.onSeek;
     Widget content;
     if (active && line.words.isNotEmpty) {
-      // 逐字卡拉OK：已唱完、当前渐变、未到用暗色
-      final spans = <TextSpan>[];
-      for (final word in line.words) {
-        final span = word.endMs - word.startMs;
-        final frac = ((_displayPosMs - word.startMs) / (span <= 0 ? 1 : span))
-            .clamp(0.0, 1.0);
-        final Color color;
-        if (frac >= 1) {
-          color = activeColor;
-        } else if (frac <= 0) {
-          color = inactiveColor;
-        } else {
-          color = Color.lerp(inactiveColor, activeColor, frac)!;
-        }
-        spans.add(
-          TextSpan(
-            text: word.text,
-            style: TextStyle(color: color),
-          ),
-        );
-      }
-      content = Text.rich(
-        TextSpan(children: spans),
-        textAlign: widget.centered ? TextAlign.center : TextAlign.start,
-        style: TextStyle(
-          fontSize: 17 * widget.fontScale,
-          fontWeight: FontWeight.bold,
-        ),
+      // 逐字卡拉OK：只让当前行订阅高频进度
+      content = ValueListenableBuilder<int>(
+        valueListenable: _posNotifier,
+        builder: (context, posMs, _) {
+          final spans = <TextSpan>[];
+          for (final word in line.words) {
+            final span = word.endMs - word.startMs;
+            final frac = ((posMs - word.startMs) / (span <= 0 ? 1 : span))
+                .clamp(0.0, 1.0);
+            final Color color;
+            if (frac >= 1) {
+              color = activeColor;
+            } else if (frac <= 0) {
+              color = inactiveColor;
+            } else {
+              color = Color.lerp(inactiveColor, activeColor, frac)!;
+            }
+            spans.add(
+              TextSpan(
+                text: word.text,
+                style: TextStyle(color: color),
+              ),
+            );
+          }
+          return Text.rich(
+            TextSpan(children: spans),
+            textAlign: widget.centered ? TextAlign.center : TextAlign.start,
+            style: TextStyle(
+              fontSize: 17 * widget.fontScale,
+              fontWeight: FontWeight.bold,
+            ),
+          );
+        },
       );
     } else {
       final text = line.text.trim().isEmpty ? ' ' : line.text;
@@ -2097,6 +2148,11 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen>
         ? null
         : widget.songs.first.artwork;
     final hasArt = firstArtwork != null && firstArtwork.isNotEmpty;
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    final headerWidthPx = (MediaQuery.sizeOf(context).width * dpr)
+        .round()
+        .clamp(360, 1440);
+    final headerHeightPx = (360 * dpr).round().clamp(360, 1440);
     return SizedBox(
       height: 360,
       child: Stack(
@@ -2115,6 +2171,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen>
                 ? CachedNetworkImage(
                     imageUrl: firstArtwork,
                     httpHeaders: kArtworkHeaders,
+                    memCacheWidth: headerWidthPx,
+                    memCacheHeight: headerHeightPx,
+                    fadeInDuration: Duration.zero,
                     fit: BoxFit.cover,
                     errorWidget: (_, _, _) => const SizedBox.shrink(),
                   )
@@ -2179,6 +2238,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen>
 
   Widget _buildSongRow(SongRecord record) {
     final art = record.artwork;
+    final thumbPx = (48 * MediaQuery.devicePixelRatioOf(context)).round();
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: ListTile(
@@ -2197,6 +2257,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen>
                   : CachedNetworkImage(
                       imageUrl: art,
                       httpHeaders: kArtworkHeaders,
+                      memCacheWidth: thumbPx,
+                      memCacheHeight: thumbPx,
+                      fadeInDuration: Duration.zero,
                       fit: BoxFit.cover,
                       errorWidget: (_, _, _) => const SizedBox.shrink(),
                     ),

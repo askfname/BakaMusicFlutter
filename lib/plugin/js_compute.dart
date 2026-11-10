@@ -23,8 +23,7 @@ String sha256Hex(String value) => sha256.convert(utf8.encode(value)).toString();
 
 String sha512Hex(String value) => sha512.convert(utf8.encode(value)).toString();
 
-String hmacSha256Hex(String key, String value) =>
-    _hmacHex(sha256, key, value);
+String hmacSha256Hex(String key, String value) => _hmacHex(sha256, key, value);
 
 String hmacSha1Hex(String key, String value) => _hmacHex(sha1, key, value);
 
@@ -98,8 +97,7 @@ String decodeCharset(List<int> bytes, String charsetName) {
       return latin1.decode(bytes);
     case 'us-ascii':
     case 'ascii':
-      return String.fromCharCodes(
-          bytes.map((b) => b <= 127 ? b : 0xFFFD));
+      return String.fromCharCodes(bytes.map((b) => b <= 127 ? b : 0xFFFD));
     case 'utf-16':
     case 'utf16':
       return _decodeUtf16(bytes, null);
@@ -132,9 +130,11 @@ String _decodeUtf16(List<int> bytes, String? kind) {
   final end = start + ((bytes.length - start) ~/ 2) * 2;
   final units = <int>[];
   for (var i = start; i < end; i += 2) {
-    units.add(bigEndian
-        ? (bytes[i] << 8) | bytes[i + 1]
-        : bytes[i] | (bytes[i + 1] << 8));
+    units.add(
+      bigEndian
+          ? (bytes[i] << 8) | bytes[i + 1]
+          : bytes[i] | (bytes[i + 1] << 8),
+    );
   }
   return _utf16UnitsToString(units);
 }
@@ -149,7 +149,8 @@ String _utf16UnitsToString(List<int> units) {
           units[i + 1] >= 0xDC00 &&
           units[i + 1] <= 0xDFFF) {
         buf.writeCharCode(
-            0x10000 + ((u - 0xD800) << 10) + (units[i + 1] - 0xDC00));
+          0x10000 + ((u - 0xD800) << 10) + (units[i + 1] - 0xDC00),
+        );
         i++;
       } else {
         buf.writeCharCode(0xFFFD);
@@ -174,7 +175,8 @@ String inflateBase64(String base64Text) {
       if (out == null) return '';
       raw = out;
     } else {
-      final out = _decompressLimited(input, _maxInflateBytes) ??
+      final out =
+          _decompressLimited(input, _maxInflateBytes) ??
           _decompressLimited(input, _maxInflateBytes, raw: true);
       if (out == null) return '';
       raw = out;
@@ -186,8 +188,12 @@ String inflateBase64(String base64Text) {
   }
 }
 
-List<int>? _decompressLimited(List<int> input, int limit,
-    {bool raw = false, bool isGzip = false}) {
+List<int>? _decompressLimited(
+  List<int> input,
+  int limit, {
+  bool raw = false,
+  bool isGzip = false,
+}) {
   try {
     final out = <int>[];
     final sink = _LimitedByteSink(out, limit);
@@ -269,9 +275,17 @@ Uint8List _aesProcess({
       : PaddedBlockCipherImpl(PKCS7Padding(), CBCBlockCipher(AESEngine()));
   final CipherParameters params = normalizedMode == 'ECB'
       ? KeyParameter(secret)
-      : ParametersWithIV<KeyParameter>(KeyParameter(secret), _copyOf16(ivBytes));
+      : ParametersWithIV<KeyParameter>(
+          KeyParameter(secret),
+          _copyOf16(ivBytes),
+        );
   padded.init(
-      encrypt, PaddedBlockCipherParameters<CipherParameters?, CipherParameters?>(params, null));
+    encrypt,
+    PaddedBlockCipherParameters<CipherParameters?, CipherParameters?>(
+      params,
+      null,
+    ),
+  );
   return padded.process(Uint8List.fromList(input));
 }
 
@@ -322,10 +336,14 @@ String randomBytesBase64(int size) {
 /// AES 加密二进制数据（mode 形如 aes-128-cbc/aes-256-ecb），输入输出均为 Base64；
 /// KEY 按 mode 位数补零/截断，IV 固定 16 字节；失败返回空串
 String aesEncryptBytes(
-    String mode, String dataB64, String keyB64, String ivB64) {
+  String mode,
+  String dataB64,
+  String keyB64,
+  String ivB64,
+) {
   try {
-    final match =
-        RegExp(r'^aes-(\d+)-(cbc|ecb)$').firstMatch(mode.trim().toLowerCase());
+    final match = RegExp(r'^aes-(\d+)-(cbc|ecb)$')
+        .firstMatch(mode.trim().toLowerCase());
     if (match == null) return '';
     final bits = int.parse(match.group(1)!);
     if (bits != 128 && bits != 192 && bits != 256) return '';
@@ -368,7 +386,9 @@ String rsaEncryptBase64(String dataB64, String pem) {
     if (parts[0] is! ASN1Integer || parts[1] is! ASN1Integer) return '';
     final modulus = (parts[0] as ASN1Integer).integer;
     final exponent = (parts[1] as ASN1Integer).integer;
-    if (modulus == null || exponent == null || modulus <= BigInt.zero) return '';
+    if (modulus == null || exponent == null || modulus <= BigInt.zero) {
+      return '';
+    }
     final data = decodeBase64Lenient(dataB64);
     final message = data.isEmpty
         ? BigInt.zero

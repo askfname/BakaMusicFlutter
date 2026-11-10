@@ -341,13 +341,18 @@ class _SearchScreenState extends State<SearchScreen> {
         final favorites = widget.repository.favorites;
         return Stack(
           children: [
-            ListView(
+            CustomScrollView(
               controller: _scrollController,
-              // 顶部为悬浮搜索栏预留，底部为悬浮底座预留
-              padding: const EdgeInsets.only(top: 96, bottom: 190),
-              children: _submittedQuery.isEmpty
-                  ? _historyChildren(theme, history, hasNoPlugin)
-                  : _resultChildren(theme, favorites, hasNoPlugin),
+              slivers: [
+                // 顶部为悬浮搜索栏预留
+                const SliverToBoxAdapter(child: SizedBox(height: 96)),
+                if (_submittedQuery.isEmpty)
+                  ..._historySlivers(theme, history, hasNoPlugin)
+                else
+                  ..._resultSlivers(theme, favorites, hasNoPlugin),
+                // 底部为悬浮底座预留
+                const SliverToBoxAdapter(child: SizedBox(height: 190)),
+              ],
             ),
             Positioned(
               top: 0,
@@ -367,20 +372,23 @@ class _SearchScreenState extends State<SearchScreen> {
                     height: 56,
                     child: TextField(
                       controller: _queryController,
-                      onChanged: (_) => setState(() {}),
                       textInputAction: TextInputAction.search,
                       onSubmitted: _submitSearch,
                       textAlignVertical: TextAlignVertical.center,
                       decoration: InputDecoration(
                         hintText: '搜索歌曲',
                         prefixIcon: const Icon(Icons.search),
-                        suffixIcon: _queryController.text.isEmpty
-                            ? null
-                            : IconButton(
-                                onPressed: _clearQuery,
-                                tooltip: '清除',
-                                icon: const Icon(Icons.clear),
-                              ),
+                        // 只重建清除按钮，输入时不刷新整页
+                        suffixIcon: ValueListenableBuilder<TextEditingValue>(
+                          valueListenable: _queryController,
+                          builder: (context, value, _) => value.text.isEmpty
+                              ? const SizedBox.shrink()
+                              : IconButton(
+                                  onPressed: _clearQuery,
+                                  tooltip: '清除',
+                                  icon: const Icon(Icons.clear),
+                                ),
+                        ),
                         border: InputBorder.none,
                         contentPadding: EdgeInsets.zero,
                       ),
@@ -396,194 +404,227 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   /// 历史视图：搜索历史 + 清空入口 + 无插件引导
-  List<Widget> _historyChildren(
+  List<Widget> _historySlivers(
     ThemeData theme,
     List<String> history,
     bool hasNoPlugin,
   ) {
     return [
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 6),
-        child: Row(
-          children: [
-            const Expanded(
-              child: Text(
-                '搜索历史',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-            ),
-            if (history.isNotEmpty)
-              TextButton(
-                onPressed: _confirmClearHistory,
-                child: const Text('清空'),
-              ),
-          ],
-        ),
-      ),
-      if (history.isEmpty)
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 4),
-          child: Text(
-            '暂无搜索历史，输入关键词开始探索音乐',
-            style: TextStyle(
-              fontSize: 13,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-        )
-      else ...[
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 18),
-          child: Wrap(
-            spacing: 8,
-            runSpacing: 6,
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 6),
+          child: Row(
             children: [
-              for (final entry in history)
-                InputChip(
-                  label: Text(
-                    entry,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                  onPressed: () => _submitSearch(entry),
-                  onDeleted: () =>
-                      unawaited(widget.repository.removeSearch(entry)),
-                  deleteIcon: const Icon(Icons.close, size: 16),
-                  deleteButtonTooltipMessage: '删除该条历史',
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(24),
-                  ),
+              const Expanded(
+                child: Text(
+                  '搜索历史',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ),
+              if (history.isNotEmpty)
+                TextButton(
+                  onPressed: _confirmClearHistory,
+                  child: const Text('清空'),
                 ),
             ],
           ),
         ),
-        const SizedBox(height: 8),
+      ),
+      if (history.isEmpty)
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 4),
+            child: Text(
+              '暂无搜索历史，输入关键词开始探索音乐',
+              style: TextStyle(
+                fontSize: 13,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        )
+      else ...[
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                for (final entry in history)
+                  InputChip(
+                    label: Text(
+                      entry,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    onPressed: () => _submitSearch(entry),
+                    onDeleted: () =>
+                        unawaited(widget.repository.removeSearch(entry)),
+                    deleteIcon: const Icon(Icons.close, size: 16),
+                    deleteButtonTooltipMessage: '删除该条历史',
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        const SliverToBoxAdapter(child: SizedBox(height: 8)),
       ],
-      if (hasNoPlugin) NoPluginPrompt(onInstallClick: widget.onInstallPlugin),
+      if (hasNoPlugin)
+        SliverToBoxAdapter(
+          child: NoPluginPrompt(onInstallClick: widget.onInstallPlugin),
+        ),
     ];
   }
 
   /// 结果视图：音源筛选 + 结果列表 + 分页加载
-  List<Widget> _resultChildren(
+  List<Widget> _resultSlivers(
     ThemeData theme,
     Set<String> favorites,
     bool hasNoPlugin,
   ) {
     return [
       if (!hasNoPlugin)
-        SizedBox(
-          height: 40,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
-            itemCount: _sources.length,
-            separatorBuilder: (_, _) => const SizedBox(width: 8),
-            itemBuilder: (context, index) {
-              final source = _sources[index];
-              return FilterChip(
-                selected: source.name == _selectedSourcePlatform,
-                onSelected: (_) => _selectSource(source.name),
-                showCheckmark: false,
-                label: Text(source.name, style: const TextStyle(fontSize: 12)),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(24),
-                ),
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              );
-            },
+        SliverToBoxAdapter(
+          child: SizedBox(
+            height: 40,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
+              itemCount: _sources.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 8),
+              itemBuilder: (context, index) {
+                final source = _sources[index];
+                return FilterChip(
+                  selected: source.name == _selectedSourcePlatform,
+                  onSelected: (_) => _selectSource(source.name),
+                  showCheckmark: false,
+                  label: Text(
+                    source.name,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                );
+              },
+            ),
           ),
         ),
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 8),
-        child: Row(
-          children: [
-            const Expanded(
-              child: Text(
-                '搜索结果',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 8),
+          child: Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  '搜索结果',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
               ),
-            ),
-            if (_submittedQuery.isNotEmpty)
-              TextButton(onPressed: _clearQuery, child: const Text('清除搜索')),
-          ],
+              if (_submittedQuery.isNotEmpty)
+                TextButton(onPressed: _clearQuery, child: const Text('清除搜索')),
+            ],
+          ),
         ),
       ),
       if (!hasNoPlugin && _searchError != null)
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 8),
-          child: Text(
-            _searchError!,
-            style: TextStyle(color: theme.colorScheme.error),
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 8),
+            child: Text(
+              _searchError!,
+              style: TextStyle(color: theme.colorScheme.error),
+            ),
           ),
         ),
       if (hasNoPlugin)
-        NoPluginPrompt(onInstallClick: widget.onInstallPlugin)
+        SliverToBoxAdapter(
+          child: NoPluginPrompt(onInstallClick: widget.onInstallPlugin),
+        )
       else if (_searching)
-        for (var i = 0; i < 8; i++) const SongRowSkeleton()
+        const SliverToBoxAdapter(child: SongRowSkeletonList())
       else
-        for (final item in _pluginSongs)
-          PluginSongRow(
-            item: item,
-            favorite: favorites.contains(item.key),
-            onPlay: () => widget.onPlayMedia(item, _pluginSongs),
-            onToggleFavorite: () =>
-                unawaited(widget.repository.toggleFavorite(item)),
-            onDownload: () => downloadMediaWithQualityDialog(
-              context,
-              widget.sourceService,
-              item,
-            ),
-            onAddPlaylist: () =>
-                addMediaToPlaylistWithDialog(context, widget.repository, item),
-          ),
+        SliverList.builder(
+          itemCount: _pluginSongs.length,
+          itemBuilder: (context, index) {
+            final item = _pluginSongs[index];
+            return PluginSongRow(
+              item: item,
+              favorite: favorites.contains(item.key),
+              onPlay: () => widget.onPlayMedia(item, _pluginSongs),
+              onToggleFavorite: () =>
+                  unawaited(widget.repository.toggleFavorite(item)),
+              onDownload: () => downloadMediaWithQualityDialog(
+                context,
+                widget.sourceService,
+                item,
+              ),
+              onAddPlaylist: () => addMediaToPlaylistWithDialog(
+                context,
+                widget.repository,
+                item,
+              ),
+            );
+          },
+        ),
       if (!hasNoPlugin &&
           _submittedQuery.isNotEmpty &&
           _pluginSongs.isNotEmpty &&
           (!_searchIsEnd || _loadMoreError != null))
-        Padding(
-          padding: const EdgeInsets.all(12),
-          child: Center(
-            child: _loadingMore
-                ? Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        '正在加载下一页',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: theme.colorScheme.onSurfaceVariant,
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Center(
+              child: _loadingMore
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
                         ),
-                      ),
-                    ],
-                  )
-                : _loadMoreError != null
-                ? Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        '下一页加载失败，$_loadMoreError',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: theme.colorScheme.error,
+                        const SizedBox(width: 8),
+                        Text(
+                          '正在加载下一页',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
                         ),
+                      ],
+                    )
+                  : _loadMoreError != null
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          '下一页加载失败，$_loadMoreError',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: theme.colorScheme.error,
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: _loadMore,
+                          child: const Text('重试'),
+                        ),
+                      ],
+                    )
+                  : Text(
+                      '上滑加载更多',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: theme.colorScheme.onSurfaceVariant,
                       ),
-                      TextButton(onPressed: _loadMore, child: const Text('重试')),
-                    ],
-                  )
-                : Text(
-                    '上滑加载更多',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: theme.colorScheme.onSurfaceVariant,
                     ),
-                  ),
+            ),
           ),
         ),
     ];

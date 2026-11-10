@@ -88,7 +88,7 @@ bool _isPrivateAddress(InternetAddress address) {
 
 class PluginHttpClient {
   PluginHttpClient({required this.platformName, void Function(String)? logger})
-      : _log = logger ?? _defaultLog;
+    : _log = logger ?? _defaultLog;
 
   final String platformName;
   final void Function(String message) _log;
@@ -135,7 +135,9 @@ class PluginHttpClient {
       return await _executeWithRetry(configText);
     } catch (error) {
       final message = _errorMessage(error);
-      return jsonEncode({'__error': message.isEmpty ? 'network error' : message});
+      return jsonEncode({
+        '__error': message.isEmpty ? 'network error' : message,
+      });
     }
   }
 
@@ -165,8 +167,9 @@ class PluginHttpClient {
         final code = response.statusCode;
         if (_redirectCodes.contains(code) && redirectCount < 20) {
           final values = response.headers['location'];
-          final location =
-              values == null || values.isEmpty ? '' : values.first.trim();
+          final location = values == null || values.isEmpty
+              ? ''
+              : values.first.trim();
           if (location.isNotEmpty) {
             final nextUrl = _resolveLocation(currentUrl, location);
             try {
@@ -196,9 +199,13 @@ class PluginHttpClient {
       final pairs = <String>[];
       void append(dynamic key, dynamic value) {
         if (value == null) return;
-        final text = value is Map || value is List ? jsonEncode(value) : '$value';
-        pairs.add('${Uri.encodeQueryComponent('$key')}='
-            '${Uri.encodeQueryComponent(text)}');
+        final text = value is Map || value is List
+            ? jsonEncode(value)
+            : '$value';
+        pairs.add(
+          '${Uri.encodeQueryComponent('$key')}='
+          '${Uri.encodeQueryComponent(text)}',
+        );
       }
 
       params.forEach((key, value) {
@@ -211,7 +218,9 @@ class PluginHttpClient {
         }
       });
       if (pairs.isNotEmpty) {
-        url += url.contains('?') ? '&${pairs.join('&')}' : '?${pairs.join('&')}';
+        url += url.contains('?')
+            ? '&${pairs.join('&')}'
+            : '?${pairs.join('&')}';
       }
     }
     if (!_isHttpUrl(url)) {
@@ -249,8 +258,9 @@ class PluginHttpClient {
     if (hasBody) {
       if (data is Map && data.containsKey('__bytes_base64')) {
         bodyKind = 'bytes';
-        bodyBytes =
-            Uint8List.fromList(decodeBase64Lenient('${data['__bytes_base64']}'));
+        bodyBytes = Uint8List.fromList(
+          decodeBase64Lenient('${data['__bytes_base64']}'),
+        );
       } else if (data is Map && _isUint8ArrayJson(data)) {
         bodyKind = 'bytes';
         bodyBytes = _uint8ArrayJsonToBytes(data);
@@ -289,8 +299,10 @@ class PluginHttpClient {
         if (_isIntentionalCancel(error)) rethrow;
         if (attempt == 1 || !_isRetryableNetworkError(error)) rethrow;
         lastError = error;
-        _log('[$platformName][http] $method $hostPath 失败重试: '
-            '${_errorMessage(error)}');
+        _log(
+          '[$platformName][http] $method $hostPath 失败重试: '
+          '${_errorMessage(error)}',
+        );
       }
     }
     throw lastError ?? _BakaHttpError('network error');
@@ -347,7 +359,9 @@ class PluginHttpClient {
         _setHeader(request, name, value);
       });
       // 插件未指定时补默认请求头（部分网关拒绝无 UA 请求）
-      if (!hasUserAgent) _setHeader(request, 'User-Agent', defaultPluginUserAgent);
+      if (!hasUserAgent) {
+        _setHeader(request, 'User-Agent', defaultPluginUserAgent);
+      }
       if (!hasAccept) {
         _setHeader(request, 'Accept', 'application/json, text/plain, */*');
       }
@@ -377,8 +391,9 @@ class PluginHttpClient {
       if (_redirectCodes.contains(code) && redirectCount < maxRedirects) {
         // Location 匹配大小写不敏感
         final values = response.headers['location'];
-        final location =
-            values == null || values.isEmpty ? '' : values.first.trim();
+        final location = values == null || values.isEmpty
+            ? ''
+            : values.first.trim();
         if (location.isNotEmpty) {
           final nextUrl = _resolveLocation(currentUrl, location);
           final nextHost = _hostOf(nextUrl);
@@ -409,8 +424,8 @@ class PluginHttpClient {
       if (response.contentLength > maxPluginResponseBytes) {
         throw _BakaHttpError('响应超过 16 MiB 限制');
       }
-      final encoding =
-          (response.headers['content-encoding']?.join(',') ?? '').toLowerCase();
+      final encoding = (response.headers['content-encoding']?.join(',') ?? '')
+          .toLowerCase();
       Stream<List<int>> stream = response;
       if (encoding.contains('gzip')) {
         stream = gzip.decoder.bind(response);
@@ -441,9 +456,11 @@ class PluginHttpClient {
       });
       final elapsed = DateTime.now().millisecondsSinceEpoch - start;
       if (method == 'POST' || elapsed > 2000 || redirectCount > 0) {
-        _log('[$platformName][http] $method $hostPath code=$code ${elapsed}ms '
-            'req=${bodyBytes?.length ?? 0}B($bodyKind) '
-            'resp=${bytes.length}B redirects=$redirectCount');
+        _log(
+          '[$platformName][http] $method $hostPath code=$code ${elapsed}ms '
+          'req=${bodyBytes?.length ?? 0}B($bodyKind) '
+          'resp=${bytes.length}B redirects=$redirectCount',
+        );
       }
       return jsonEncode({
         'status': code,
@@ -533,7 +550,9 @@ class PluginHttpClient {
   String _errorMessage(Object error) {
     if (error is _BakaHttpError) return error.message;
     if (error is TimeoutException) return error.message ?? 'timeout';
-    if (error is SocketException) return error.osError?.message ?? error.message;
+    if (error is SocketException) {
+      return error.osError?.message ?? error.message;
+    }
     if (error is HttpException) return error.message;
     if (error is FormatException) return error.message;
     return error.toString();
@@ -579,13 +598,16 @@ String _encodeUrlInline(String raw) {
 }
 
 String _formEncode(Map<dynamic, dynamic> obj) {
-  return obj.entries.map((entry) {
-    final raw = entry.value;
-    final text =
-        raw == null ? '' : (raw is Map || raw is List ? jsonEncode(raw) : '$raw');
-    return '${Uri.encodeQueryComponent('${entry.key}')}='
-        '${Uri.encodeQueryComponent(text)}';
-  }).join('&');
+  return obj.entries
+      .map((entry) {
+        final raw = entry.value;
+        final text = raw == null
+            ? ''
+            : (raw is Map || raw is List ? jsonEncode(raw) : '$raw');
+        return '${Uri.encodeQueryComponent('${entry.key}')}='
+            '${Uri.encodeQueryComponent(text)}';
+      })
+      .join('&');
 }
 
 /// JSON.stringify(Uint8Array) 会变成 {"0":..,"1":..} 的纯数字键对象
@@ -650,8 +672,11 @@ String? _pathOf(String url) {
 
 /// 头名（每段首字母大写、其余小写）
 String _canonicalHeader(String name) {
-  return name.split('-').map((part) {
-    if (part.isEmpty) return part;
-    return '${part[0].toUpperCase()}${part.substring(1).toLowerCase()}';
-  }).join('-');
+  return name
+      .split('-')
+      .map((part) {
+        if (part.isEmpty) return part;
+        return '${part[0].toUpperCase()}${part.substring(1).toLowerCase()}';
+      })
+      .join('-');
 }

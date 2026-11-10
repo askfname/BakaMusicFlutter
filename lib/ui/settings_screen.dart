@@ -33,14 +33,10 @@ class SettingsScreen extends StatefulWidget {
     super.key,
     required this.sourceService,
     required this.repository,
-    this.scrollTrigger = 0,
   });
 
   final MusicSourceService sourceService;
   final AppRepository repository;
-
-  /// 主页"安装音源插件"入口递增该值以定位插件管理
-  final int scrollTrigger;
 
   @override
   State<SettingsScreen> createState() => SettingsScreenState();
@@ -59,6 +55,11 @@ class SettingsScreenState extends State<SettingsScreen> {
   /// 返回键优先退出插件配置页（app.dart 返回逻辑检测该状态）
   bool get inPluginPage => _inPluginPage;
 
+  /// 主页/搜索页入口：直接展开插件管理
+  void openPluginPage() {
+    if (!_inPluginPage) setState(() => _inPluginPage = true);
+  }
+
   void exitPluginPage() {
     if (_inPluginPage) setState(() => _inPluginPage = false);
   }
@@ -66,18 +67,8 @@ class SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
-    if (widget.scrollTrigger > 0) _inPluginPage = true;
     unawaited(_init());
     unawaited(_loadDownloadDirectory());
-  }
-
-  @override
-  void didUpdateWidget(SettingsScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.scrollTrigger != oldWidget.scrollTrigger &&
-        widget.scrollTrigger > 0) {
-      setState(() => _inPluginPage = true);
-    }
   }
 
   Future<void> _init() async {

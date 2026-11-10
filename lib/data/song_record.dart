@@ -46,7 +46,9 @@ class SongRecord {
             qualities['${entry.key}'] = QualityInfo(
               size: (size != null && size > 0) ? size : null,
               bitrate: (bitrate != null && bitrate > 0) ? bitrate : null,
-              url: (url != null && url.toLowerCase().startsWith('http')) ? url : null,
+              url: (url != null && url.toLowerCase().startsWith('http'))
+                  ? url
+                  : null,
             );
           }
         }
@@ -68,11 +70,13 @@ class SongRecord {
   static String recordKey(String platform, String id) => '$platform:$id';
 
   static SongRecord fromItem(MediaItem item, {String? qualityKey}) {
-    final best = qualityKey ??
+    final best =
+        qualityKey ??
         (item.qualities.isEmpty
             ? null
-            : item.qualities.keys
-                .reduce((a, b) => qualityRankOf(a) >= qualityRankOf(b) ? a : b)) ??
+            : item.qualities.keys.reduce(
+                (a, b) => qualityRankOf(a) >= qualityRankOf(b) ? a : b,
+              )) ??
         '320k';
     final qualitiesJson = jsonEncode({
       for (final e in item.qualities.entries) e.key: e.value.toJson(),
@@ -110,7 +114,9 @@ class SongRecord {
         album: '${o['album'] ?? ''}',
         artwork: (o['artwork'] as String?)?.takeIf((v) => v.isNotEmpty),
         durationMs: (o['durationMs'] as num?)?.toInt() ?? 0,
-        qualityKey: (qualityKey == null || qualityKey.isEmpty) ? '320k' : qualityKey,
+        qualityKey: (qualityKey == null || qualityKey.isEmpty)
+            ? '320k'
+            : qualityKey,
         size: (size != null && size > 0) ? size : null,
         qualitiesJson: (o['qualitiesJson'] as String?) ?? '{}',
         rawJson: (o['rawJson'] as String?)?.takeIf((v) => v.isNotEmpty),
@@ -121,19 +127,19 @@ class SongRecord {
   }
 
   static String toJsonString(SongRecord r) => jsonEncode({
-        'key': r.key,
-        'id': r.id,
-        'platform': r.platform,
-        'title': r.title,
-        'artist': r.artist,
-        'album': r.album,
-        'artwork': r.artwork ?? '',
-        'durationMs': r.durationMs,
-        'qualityKey': r.qualityKey,
-        if (r.size != null) 'size': r.size,
-        'qualitiesJson': r.qualitiesJson,
-        'rawJson': r.rawJson ?? '',
-      });
+    'key': r.key,
+    'id': r.id,
+    'platform': r.platform,
+    'title': r.title,
+    'artist': r.artist,
+    'album': r.album,
+    'artwork': r.artwork ?? '',
+    'durationMs': r.durationMs,
+    'qualityKey': r.qualityKey,
+    if (r.size != null) 'size': r.size,
+    'qualitiesJson': r.qualitiesJson,
+    'rawJson': r.rawJson ?? '',
+  });
 }
 
 extension _StringTakeIf on String? {

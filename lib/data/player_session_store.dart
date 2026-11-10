@@ -58,22 +58,32 @@ class PlayerSessionStore {
             : (queueIndex >= queue.length ? queue.length - 1 : queueIndex);
         from = (idx - _maxQueue ~/ 2).clamp(0, queue.length);
       }
-      final end =
-          queue.length > from + _maxQueue ? from + _maxQueue : queue.length;
+      final end = queue.length > from + _maxQueue
+          ? from + _maxQueue
+          : queue.length;
       final trimmed = queue.sublist(from, end);
-      final trimmedIndex = (queueIndex - from)
-          .clamp(0, trimmed.isEmpty ? 0 : trimmed.length - 1);
+      final trimmedIndex = (queueIndex - from).clamp(
+        0,
+        trimmed.isEmpty ? 0 : trimmed.length - 1,
+      );
       await _prefs.setString(
-          _queueKey,
-          jsonEncode([
-            for (final it in trimmed)
-              SongRecord.toJsonString(SongRecord.fromItem(it)),
-          ]));
+        _queueKey,
+        jsonEncode([
+          for (final it in trimmed)
+            SongRecord.toJsonString(SongRecord.fromItem(it)),
+        ]),
+      );
       await _prefs.setInt(_queueIndexKey, trimmedIndex);
-      await _prefs.setString(_currentKey,
-          current == null ? '' : SongRecord.toJsonString(SongRecord.fromItem(current)));
       await _prefs.setString(
-          _qualityKey, (qualityKey == null || qualityKey.isEmpty) ? '320k' : qualityKey);
+        _currentKey,
+        current == null
+            ? ''
+            : SongRecord.toJsonString(SongRecord.fromItem(current)),
+      );
+      await _prefs.setString(
+        _qualityKey,
+        (qualityKey == null || qualityKey.isEmpty) ? '320k' : qualityKey,
+      );
       if (size != null && size > 0) {
         await _prefs.setInt(_sizeKey, size);
       } else {

@@ -746,7 +746,6 @@ bool _isIdChar(int cu) =>
     cu == 0x24 ||
     (cu > 127 && _isUnicodeLetterOrDigit(cu));
 
-
 bool _isLetterChar(int cu) {
   if ((cu >= 65 && cu <= 90) || (cu >= 97 && cu <= 122)) return true;
   if (cu <= 127) return false;
@@ -756,7 +755,6 @@ bool _isLetterChar(int cu) {
   _unicodeLetterCache[cu] = value;
   return value;
 }
-
 
 bool _isJsWhitespaceChar(int cu) =>
     (cu >= 0x09 && cu <= 0x0D) ||

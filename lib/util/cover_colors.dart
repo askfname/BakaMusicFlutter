@@ -128,9 +128,13 @@ class CoverColors {
 
   static Future<ui.Image?> _decodeImage(String artwork) {
     final completer = Completer<ui.Image?>();
-    final provider = CachedNetworkImageProvider(
-      artwork,
-      headers: kArtworkHeaders,
+    // 解码阶段即缩到小图，避免整张封面进入内存
+    final provider = ResizeImage(
+      CachedNetworkImageProvider(artwork, headers: kArtworkHeaders),
+      width: 96,
+      height: 96,
+      policy: ResizeImagePolicy.fit,
+      allowUpscaling: false,
     );
     final stream = provider.resolve(ImageConfiguration.empty);
     late ImageStreamListener listener;

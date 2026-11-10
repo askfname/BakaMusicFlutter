@@ -49,6 +49,15 @@ android {
     }
 
     buildTypes {
+        // 测试包使用独立包名
+        debug {
+            applicationIdSuffix = ".test"
+            versionNameSuffix = "-test"
+        }
+        maybeCreate("profile").apply {
+            applicationIdSuffix = ".test"
+            versionNameSuffix = "-test"
+        }
         release {
             signingConfig = signingConfigs.getByName("release")
             proguardFiles(
